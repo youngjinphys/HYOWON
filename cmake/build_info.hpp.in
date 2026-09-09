@@ -1,0 +1,32 @@
+#pragma once
+
+#include <ostream>
+#include <string_view>
+
+namespace cosmo_nbody::build_info {
+
+inline constexpr std::string_view SOFTWARE_NAME = "HYOWON";
+inline constexpr std::string_view VERSION = "@PROJECT_VERSION@";
+inline constexpr std::string_view RELEASE_STAGE = "@HYOWON_RELEASE_STAGE@";
+inline constexpr std::string_view SOURCE_COMMIT = "@HYOWON_SOURCE_COMMIT@";
+inline constexpr std::string_view SOURCE_TREE = "@HYOWON_SOURCE_TREE@";
+inline constexpr std::string_view SOURCE_STATE = "@HYOWON_SOURCE_STATE@";
+inline constexpr std::string_view SOURCE_CAPTURE_PHASE = "cmake_configure";
+
+// This is the configure-time observation, not an executable attestation.
+inline bool write_version_if_requested(
+    int argc, char* const* argv, std::ostream& out) {
+    if (argc != 2 || argv == nullptr || argv[1] == nullptr
+        || std::string_view(argv[1]) != "--version") {
+        return false;
+    }
+    out << SOFTWARE_NAME << ' ' << VERSION << ' ' << RELEASE_STAGE << '\n'
+        << "source_commit: " << SOURCE_COMMIT << '\n'
+        << "source_tree: " << SOURCE_TREE << '\n'
+        << "source_state: " << SOURCE_STATE << '\n'
+        << "source_capture_phase: " << SOURCE_CAPTURE_PHASE << '\n'
+        << std::flush;
+    return true;
+}
+
+} // namespace cosmo_nbody::build_info

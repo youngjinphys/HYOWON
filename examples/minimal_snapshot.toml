@@ -1,0 +1,47 @@
+[cosmology]
+h = 0.7
+omega_m = 0.3
+omega_lambda = 0.7
+omega_b = 0.05
+sigma8 = 0.8
+n_s = 1.0
+
+[box]
+comoving_size_Mpc_h = 8.0
+particles_per_dimension = 4
+pm_mesh_per_dimension = 8
+
+[gravity]
+solver = "PM"
+deconvolve_cic = false
+
+[ic]
+mode = "snapshot"
+snapshot_file = ""  # required; may be supplied with --set ic.snapshot_file=PATH
+
+[time]
+start_redshift = 9.0
+final_redshift = 8.0
+delta_ln_a = 0.02
+step_policy = "global"
+
+[output]
+snapshot_scale_factors = [0.105, 0.1111111111111111]
+format = "hdf5"
+restart_cadence_steps = 1
+root_directory = "runs"
+run_label = "minimal_snapshot"
+timestamped_run_directory = false
+snapshot_batch_particles = 64
+
+[diagnostics]
+write_diagnostics = true
+
+[runtime]
+num_threads = 1
+mpi_enabled = false
+
+[memory]
+ic_scratch_mode = "memory"
+evolution_scratch_mode = "memory"
+scratch_directory = ""

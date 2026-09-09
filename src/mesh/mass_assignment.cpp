@@ -1,0 +1,5 @@
+#include "cic_coordinate.hpp"
+#include "cosmo_nbody/mesh/detail/weighted_plane_partition.hpp"
+#include "mass_assignment_workspace.inc"
+#include "mass_assignment_deposit.inc"
+#include "mass_assignment_gather.inc"

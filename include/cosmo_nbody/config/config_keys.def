@@ -1,0 +1,54 @@
+// Public TOML keys: section, key, value kind.
+
+COSMO_CONFIG_KEY("cosmology", "h", Real)
+COSMO_CONFIG_KEY("cosmology", "omega_m", Real)
+COSMO_CONFIG_KEY("cosmology", "omega_lambda", Real)
+COSMO_CONFIG_KEY("cosmology", "omega_b", Real)
+COSMO_CONFIG_KEY("cosmology", "sigma8", Real)
+COSMO_CONFIG_KEY("cosmology", "n_s", Real)
+
+COSMO_CONFIG_KEY("box", "comoving_size_Mpc_h", Real)
+COSMO_CONFIG_KEY("box", "particles_per_dimension", UnsignedInteger)
+COSMO_CONFIG_KEY("box", "pm_mesh_per_dimension", UnsignedInteger)
+
+COSMO_CONFIG_KEY("gravity", "solver", String)
+COSMO_CONFIG_KEY("gravity", "softening_comoving_Mpc_h", Real)
+COSMO_CONFIG_KEY("gravity", "theta", Real)
+COSMO_CONFIG_KEY("gravity", "split_scale_cells", Real)
+COSMO_CONFIG_KEY("gravity", "cutoff_multiplier", Real)
+COSMO_CONFIG_KEY("gravity", "deconvolve_cic", Boolean)
+
+COSMO_CONFIG_KEY("ic", "mode", String)
+COSMO_CONFIG_KEY("ic", "lpt_order", SignedInteger)
+COSMO_CONFIG_KEY("ic", "seed", UnsignedInteger)
+COSMO_CONFIG_KEY("ic", "power_spectrum_file", String)
+COSMO_CONFIG_KEY("ic", "power_spectrum_redshift", Real)
+COSMO_CONFIG_KEY("ic", "power_spectrum_fidelity", String)
+COSMO_CONFIG_KEY("ic", "snapshot_file", String)
+COSMO_CONFIG_KEY("ic", "expected_snapshot_sha256", String)
+COSMO_CONFIG_KEY("ic", "mesh_per_dimension", UnsignedInteger)
+COSMO_CONFIG_KEY("ic", "max_mode_per_axis", UnsignedInteger)
+COSMO_CONFIG_KEY("ic", "amplitude_mode", String)
+COSMO_CONFIG_KEY("ic", "phase_pairing", String)
+
+COSMO_CONFIG_KEY("time", "start_redshift", Real)
+COSMO_CONFIG_KEY("time", "final_redshift", Real)
+COSMO_CONFIG_KEY("time", "delta_ln_a", Real)
+COSMO_CONFIG_KEY("time", "step_policy", String)
+
+COSMO_CONFIG_KEY("output", "snapshot_scale_factors", RealArray)
+COSMO_CONFIG_KEY("output", "format", String)
+COSMO_CONFIG_KEY("output", "restart_cadence_steps", UnsignedInteger)
+COSMO_CONFIG_KEY("output", "root_directory", String)
+COSMO_CONFIG_KEY("output", "run_label", String)
+COSMO_CONFIG_KEY("output", "timestamped_run_directory", Boolean)
+COSMO_CONFIG_KEY("output", "snapshot_batch_particles", UnsignedInteger)
+
+COSMO_CONFIG_KEY("diagnostics", "write_diagnostics", Boolean)
+
+COSMO_CONFIG_KEY("runtime", "num_threads", UnsignedInteger)
+COSMO_CONFIG_KEY("runtime", "mpi_enabled", Boolean)
+
+COSMO_CONFIG_KEY("memory", "ic_scratch_mode", String)
+COSMO_CONFIG_KEY("memory", "evolution_scratch_mode", String)
+COSMO_CONFIG_KEY("memory", "scratch_directory", String)
