@@ -100,6 +100,8 @@ namespace {
     append_field(out, ic.amplitude_mode);
     append_field(out, ic.phase_pairing);
     append_u64(out, config.ic_mesh_per_dimension());
+    append_bool(out, ic.max_mode_per_axis.has_value());
+    if (ic.max_mode_per_axis) append_u64(out, *ic.max_mode_per_axis);
     append_field(out, ic.power_spectrum_sha256);
     append_field(out, ic.snapshot_sha256);
 

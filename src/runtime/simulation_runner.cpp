@@ -1524,9 +1524,19 @@ void SimulationRunner::run() {
     record_memory_sample("terminal");
 
     if (diagnostics_enabled) {
-        write_validation_report(
-            final_force_balance_relative_residual,
-            max_force_balance_relative_residual);
+        std::exception_ptr report_exception;
+        try {
+            write_validation_report(
+                final_force_balance_relative_residual,
+                max_force_balance_relative_residual);
+        } catch (...) {
+            report_exception = std::current_exception();
+        }
+        synchronize_exception_or_rethrow(
+            runtime_context_.mpi_active(),
+            report_exception,
+            runtime_context_.size(),
+            "Validation report publication");
     }
 
     std::exception_ptr memory_timeline_exception;

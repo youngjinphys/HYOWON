@@ -1,9 +1,11 @@
-# HYOWON v0.0.1 Beta
+# HYOWON v0.0.2 Beta
 
 C++20 cosmological N-body: PM/TreePM, 1LPT/2LPT, HDF5, optional MPI.
 Flat matter–Λ background; one collisionless matter population. No hydrodynamics,
 radiation or massive-neutrino evolution. Experimental. Accuracy and convergence
 must be established for each application. File formats are not stable.
+
+See [CHANGELOG.md](CHANGELOG.md) for changes since v0.0.1. v0.0.2 is unreleased.
 
 ## Build
 
@@ -23,6 +25,7 @@ cmake --install build --prefix "$HOME/.local"
 | `HYOWON_ENABLE_MPI` | `OFF` | Distributed runtime; requires MPI C++. |
 | `HYOWON_ENABLE_FFTW_MPI` | `OFF` | Distributed FFT; requires MPI enabled and matching FFTW-MPI. |
 | `HYOWON_BUILD_ANALYZER` | `ON` | Build `hyowon_analyze`. |
+| `HYOWON_BUILD_TESTS` | `OFF` | Build focused CTest regressions; tests are not installed. |
 | `HYOWON_OPENMP_ROOT` | empty | Optional OpenMP installation prefix, principally for Apple Clang. |
 | `HYOWON_FFTW_ROOT` | empty | FFTW prefix; base, threads and MPI libraries must share a provider. |
 | `FETCHCONTENT_SOURCE_DIR_TOMLPLUSPLUS` | unset | Local toml++ source in place of download. |
@@ -32,6 +35,11 @@ cmake --install build --prefix "$HOME/.local"
 Serial build: add `-DHYOWON_ENABLE_OPENMP=OFF -DHYOWON_ENABLE_FFTW_THREADS=OFF`.
 MPI build: add `-DHYOWON_ENABLE_MPI=ON -DHYOWON_ENABLE_FFTW_MPI=ON`.
 Use separate build directories for these configurations. Python is not required.
+
+To run the regressions, configure with `-DHYOWON_BUILD_TESTS=ON`, build, then run
+`ctest --test-dir build --output-on-failure`. MPI builds include multi-rank tests;
+MPI/OpenMP startup tests use a POSIX shell and launcher rank environment variables.
+These small tests do not establish cosmological accuracy or convergence.
 
 ## Run
 
@@ -57,7 +65,13 @@ build/hyowon run/snapshot.toml --restart CHECKPOINT_DIRECTORY \
   --set ic.snapshot_file=run/ic.hdf5 --set output.run_label=resumed
 ```
 
-MPI evolution uses the same configuration and overrides on every rank:
+v0.0.2 writes restart schema v3, which binds the requested IC Fourier support.
+v0.0.1 checkpoints from `ic.mode="generate"` lack that identity and must be
+continued with v0.0.1. Legacy checkpoints from `ic.mode="snapshot"` remain readable.
+
+MPI evolution requires the same configuration and overrides on every rank,
+including `runtime.mpi_enabled=true`. Configuration loading precedes MPI startup;
+agreement checks after startup cannot enforce that launch prerequisite.
 
 ```sh
 mpiexec -n 2 build/hyowon run/snapshot.toml \

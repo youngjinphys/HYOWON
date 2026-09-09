@@ -1,5 +1,8 @@
 // T-web classifier on the CIC overdensity mesh, without CIC deconvolution or
 // interlacing: T_ij(k;R)=(k_i k_j/k^2) delta(k) exp[-(kR)^2/2], k!=0.
+// At even-grid Nyquist axes, mixed derivatives use the reflection-compatible
+// real trigonometric convention (zero if either axis is Nyquist); diagonal
+// derivatives retain their Nyquist contribution.
 // The number of eigenvalues above lambda_threshold labels void/sheet/filament/node.
 #pragma once
 

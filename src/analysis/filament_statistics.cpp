@@ -4,6 +4,7 @@
 #include "cosmo_nbody/analysis/symmetric_eigensystem.hpp"
 #include "cosmo_nbody/math/periodic_box.hpp"
 #include "cosmo_nbody/mesh/fft_backend.hpp"
+#include "cosmo_nbody/mesh/fourier_hessian.hpp"
 #include "cosmo_nbody/mesh/mesh_field.hpp"
 #include "cosmo_nbody/mesh/mesh_geometry.hpp"
 
@@ -162,10 +163,8 @@ TidalWebField FilamentStatistics::build_tidal_web_field(
                         n_mesh % 2 == 0 && ix == n_mesh / 2,
                         n_mesh % 2 == 0 && iy == n_mesh / 2,
                         n_mesh % 2 == 0 && iz == n_mesh / 2};
-                    // A mixed derivative with exactly one Nyquist axis would
-                    // violate Hermitian symmetry in the real FFT representation.
-                    const Real kernel_value = nyquist[axis_a] != nyquist[axis_b]
-                        ? 0.0 : components[axis_a] * components[axis_b] / k2;
+                    const Real kernel_value = mesh::real_fourier_hessian_numerator(
+                        axis_a, axis_b, components, nyquist) / k2;
                     if (!std::isfinite(kernel_value)) {
                         spectral_failure[ix] = std::uint8_t{1};
                         modes[index] = {0.0, 0.0};

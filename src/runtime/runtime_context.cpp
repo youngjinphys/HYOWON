@@ -1,5 +1,6 @@
 #include "cosmo_nbody/runtime/runtime_context.hpp"
 
+#include "cosmo_nbody/runtime/mpi_collective_stage.hpp"
 #include "cosmo_nbody/runtime/thread_policy.hpp"
 
 #include <algorithm>
@@ -378,31 +379,39 @@ struct RuntimeContext::State {
             shared_unbound_cpu_affinity =
                 locality.affinity.shared_unbound_affinity;
 
-            host_threads.emplace(
-                params.num_threads,
-                params.num_threads == 0 ? automatic_thread_ceiling : 0);
+            std::exception_ptr local_setup_exception;
+            try {
+                host_threads.emplace(
+                    params.num_threads,
+                    params.num_threads == 0 ? automatic_thread_ceiling : 0);
 
-            char processor_buffer[MPI_MAX_PROCESSOR_NAME]{};
-            int processor_length = 0;
-            if (MPI_Get_processor_name(
-                    processor_buffer, &processor_length) == MPI_SUCCESS
-                && processor_length >= 0
-                && processor_length <= MPI_MAX_PROCESSOR_NAME) {
-                processor.assign(
-                    processor_buffer,
-                    static_cast<std::size_t>(processor_length));
-            }
+                char processor_buffer[MPI_MAX_PROCESSOR_NAME]{};
+                int processor_length = 0;
+                if (MPI_Get_processor_name(
+                        processor_buffer, &processor_length) == MPI_SUCCESS
+                    && processor_length >= 0
+                    && processor_length <= MPI_MAX_PROCESSOR_NAME) {
+                    processor.assign(
+                        processor_buffer,
+                        static_cast<std::size_t>(processor_length));
+                }
 
-            char library_buffer[MPI_MAX_LIBRARY_VERSION_STRING]{};
-            int library_length = 0;
-            if (MPI_Get_library_version(
-                    library_buffer, &library_length) == MPI_SUCCESS
-                && library_length >= 0
-                && library_length <= MPI_MAX_LIBRARY_VERSION_STRING) {
-                mpi_library.assign(
-                    library_buffer,
-                    static_cast<std::size_t>(library_length));
+                char library_buffer[MPI_MAX_LIBRARY_VERSION_STRING]{};
+                int library_length = 0;
+                if (MPI_Get_library_version(
+                        library_buffer, &library_length) == MPI_SUCCESS
+                    && library_length >= 0
+                    && library_length <= MPI_MAX_LIBRARY_VERSION_STRING) {
+                    mpi_library.assign(
+                        library_buffer,
+                        static_cast<std::size_t>(library_length));
+                }
+            } catch (...) {
+                local_setup_exception = std::current_exception();
             }
+            // Agree before any rank returns or tears down its MPI runtime.
+            synchronize_mpi_exception(
+                local_setup_exception, size, "MPI local runtime setup");
             mpi_active = true;
         } catch (...) {
             host_threads.reset();

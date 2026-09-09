@@ -1,5 +1,6 @@
 #include "cosmo_nbody/ic/lpt_displacement.hpp"
 #include "cosmo_nbody/ic/particle_lattice_bandlimit.hpp"
+#include "cosmo_nbody/mesh/fourier_hessian.hpp"
 #include "cosmo_nbody/math/periodic_box.hpp"
 #include "cosmo_nbody/runtime/raw_scratch_buffer.hpp"
 #include "cosmo_nbody/runtime/real_scratch_buffer.hpp"
@@ -93,20 +94,6 @@ core::Real odd_derivative_component(
     core::Real full_k,
     bool nyquist) noexcept {
     return nyquist ? core::Real{0.0} : full_k;
-}
-
-core::Real hessian_numerator(
-    int dim_a,
-    int dim_b,
-    const core::Real full_k[3],
-    const bool nyquist[3]) noexcept {
-    if (dim_a == dim_b) {
-        return full_k[dim_a] * full_k[dim_a];
-    }
-    if (nyquist[dim_a] != nyquist[dim_b]) {
-        return 0.0;
-    }
-    return full_k[dim_a] * full_k[dim_b];
 }
 
 bool apply_lpt_component_update(
@@ -422,7 +409,7 @@ void apply_to_arrays_impl(
                         psi_k[index] = {0.0, 0.0};
                         continue;
                     }
-                    const core::Real numerator = hessian_numerator(
+                    const core::Real numerator = mesh::real_fourier_hessian_numerator(
                         dim_a, dim_b, full_k, nyquist);
                     psi_k[index] = (*first_order_source)[index]
                         * (numerator / k2);

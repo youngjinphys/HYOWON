@@ -14,6 +14,10 @@ namespace ic {
 class LPTDisplacement {
 public:
     // All six arrays contain N^3 elements in the same corner-lattice ordering.
+    // The first-order density spectrum follows the configured IC Fourier
+    // support, as produced by RandomField. Hessians use the same reflection-
+    // compatible real trigonometric convention as the tidal-web analysis;
+    // the generated bandlimit excludes the affected Nyquist planes.
     static void apply_to_arrays(
         const config::SimulationParameters& config,
         const cosmology::CosmologyModel& cosmo,

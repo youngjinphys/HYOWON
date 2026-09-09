@@ -14,6 +14,7 @@ struct SnapshotSchema {
 struct RestartSchema {
     std::string_view identity;
     bool includes_input_paths;
+    bool includes_ic_support;
 };
 
 inline constexpr std::string_view SNAPSHOT_ATTRIBUTE = "SnapshotSchema";
@@ -21,10 +22,11 @@ inline constexpr std::string_view RESTART_ATTRIBUTE = "RestartSchema";
 
 inline constexpr SnapshotSchema CURRENT_SNAPSHOT{"hyowon.snapshot.v1"};
 
-// Both restart encodings require dynamics and state digests. Only the older
-// dynamics descriptor also includes the input file paths.
-inline constexpr RestartSchema PATH_BOUND_RESTART{"hyowon.restart.v1", true};
-inline constexpr RestartSchema CURRENT_RESTART{"hyowon.restart.v2", false};
+// v1/v2 lack generated-IC Fourier support and cannot attest those runs.
+// Snapshot-based legacy restarts remain readable through their source SHA-256.
+inline constexpr RestartSchema PATH_BOUND_RESTART{"hyowon.restart.v1", true, false};
+inline constexpr RestartSchema CONTENT_BOUND_RESTART{"hyowon.restart.v2", false, false};
+inline constexpr RestartSchema CURRENT_RESTART{"hyowon.restart.v3", false, true};
 
 inline constexpr std::size_t MAXIMUM_RESTART_SCHEMA_BYTES =
     PATH_BOUND_RESTART.identity.size() > CURRENT_RESTART.identity.size()
@@ -34,6 +36,7 @@ inline constexpr std::size_t MAXIMUM_RESTART_SCHEMA_BYTES =
 [[nodiscard]] constexpr const RestartSchema* lookup_restart(
     std::string_view identity) noexcept {
     if (identity == CURRENT_RESTART.identity) return &CURRENT_RESTART;
+    if (identity == CONTENT_BOUND_RESTART.identity) return &CONTENT_BOUND_RESTART;
     if (identity == PATH_BOUND_RESTART.identity) return &PATH_BOUND_RESTART;
     return nullptr;
 }

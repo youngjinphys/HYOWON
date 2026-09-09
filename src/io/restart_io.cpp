@@ -240,7 +240,7 @@ int restart_mpi_size(const config::SimulationParameters& config) {
 std::string restart_dynamics_descriptor(
     const config::SimulationParameters& config,
     const std::string& verified_snapshot_ic_sha256,
-    bool include_legacy_input_paths) {
+    const artifact_schema::RestartSchema& encoding) {
     return detail::render_bounded_text(
         MAXIMUM_PERSISTED_PROVENANCE_TEXT_BYTES,
         [&](std::ostream& out) {
@@ -298,9 +298,15 @@ std::string restart_dynamics_descriptor(
             append_uint("ic_seed", ic.seed);
             append_uint(
                 "ic_mesh_per_dimension", config.ic_mesh_per_dimension());
+            if (encoding.includes_ic_support) {
+                append_bool("ic_max_mode_per_axis_set", ic.max_mode_per_axis.has_value());
+                if (ic.max_mode_per_axis) {
+                    append_uint("ic_max_mode_per_axis", *ic.max_mode_per_axis);
+                }
+            }
             append_string("ic_amplitude_mode", ic.amplitude_mode);
             append_string("ic_phase_pairing", ic.phase_pairing);
-            if (include_legacy_input_paths) {
+            if (encoding.includes_input_paths) {
                 append_string("ic_power_spectrum_file", ic.power_spectrum_file);
             }
             append_string(
@@ -309,7 +315,7 @@ std::string restart_dynamics_descriptor(
                 "ic_power_spectrum_redshift", ic.power_spectrum_redshift);
             append_string(
                 "ic_power_spectrum_fidelity", ic.power_spectrum_fidelity);
-            if (include_legacy_input_paths) {
+            if (encoding.includes_input_paths) {
                 append_string("ic_snapshot_file", ic.snapshot_file);
             }
             append_string(
@@ -341,7 +347,7 @@ std::string restart_dynamics_sha256(
     return sha256_text(restart_dynamics_descriptor(
         config,
         verified_snapshot_ic_sha256,
-        encoding.includes_input_paths));
+        encoding));
 }
 
 std::uint64_t restart_step_u64(const time::TimeStepper& stepper) {
@@ -558,6 +564,12 @@ RestartStateIdentityResult RestartIO::read_restart_with_identity(
     const auto* encoding = artifact_schema::lookup_restart(restart_schema);
     if (encoding == nullptr) {
         throw std::runtime_error("Restart HYOWON schema is unsupported");
+    }
+    if (!encoding->includes_ic_support && config_.get_ic().mode == "generate") {
+        throw std::runtime_error(
+            "Legacy generated-IC restart does not bind IC Fourier support; "
+            "continue this checkpoint with HYOWON v0.0.1. "
+            "New v0.0.2 runs write support-bound restart checkpoints");
     }
     const std::string product_kind = read_string_attr(
         file, RESTART_PRODUCT_KIND_ATTRIBUTE,

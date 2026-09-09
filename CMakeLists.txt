@@ -15,7 +15,7 @@ set(
     CACHE PATH
     "Optional coherent FFTW installation prefix for headers, base/threads libraries, and FFTW-MPI")
 
-project(HYOWON VERSION 0.0.1 LANGUAGES CXX C)
+project(HYOWON VERSION 0.0.2 LANGUAGES CXX C)
 set(HYOWON_RELEASE_STAGE "Beta")
 
 # Record configure-time source provenance without rejecting dirty/unbound trees.
@@ -129,13 +129,19 @@ endif()
 
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/project.cmake")
 
+option(HYOWON_BUILD_TESTS "Build focused numerical and runtime regression tests" OFF)
+if(HYOWON_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
+
 set(CPACK_SOURCE_GENERATOR "TGZ;ZIP")
 set(CPACK_SOURCE_PACKAGE_FILE_NAME "HYOWON-v${PROJECT_VERSION}")
 set(CPACK_SOURCE_IGNORE_FILES
     "/\\.git/" "/build[^/]*/" "/Build/" "/cmake-build[^/]*/"
     "/run/" "/runs/" "/dist/" "/\\.venv/" "/__pycache__/"
     "/\\.codex/" "/\\.agents/" "/\\.claude/"
-    "/tests/" "/docs/" "/\\.github/"
+    "/docs/" "/\\.github/"
     "\\.py$" "\\.pyc$" "\\.log$" "\\.tmp$" "\\.hdf5$" "\\.h5$" "\\.DS_Store$")
 set(CPACK_VERBATIM_VARIABLES YES)
 include(CPack)
