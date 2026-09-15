@@ -533,7 +533,7 @@ void emit_runtime_diagnostic(
     std::ostringstream out;
     out << std::setprecision(std::numeric_limits<core::Real>::max_digits10);
     out << "TREEPM_RUNTIME_DIAGNOSTIC {"
-        << "\"schema\":\"hyowon.treepm_runtime_diagnostic.v1\""
+        << "\"schema\":\"hyowon.treepm_runtime_diagnostic\""
         << ",\"measurement_only\":true"
         << ",\"force_refresh_index\":" << refresh_index
         << ",\"theta\":" << config.get_gravity().theta

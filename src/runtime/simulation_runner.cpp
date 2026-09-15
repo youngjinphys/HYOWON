@@ -9,6 +9,7 @@
 #include "cosmo_nbody/runtime/thread_policy.hpp"
 #include "cosmo_nbody/validation/conservation_checks.hpp"
 #include "cosmo_nbody/validation/force_balance_diagnostics.hpp"
+#include "cosmo_nbody/validation/force_energy_work.hpp"
 #include "cosmo_nbody/validation/layzer_irvine_ratio.hpp"
 #include "cosmo_nbody/validation/layzer_irvine_timeline.hpp"
 
@@ -397,7 +398,6 @@ void SimulationRunner::initialize_from_restart(
         config_,
         runtime_context_.rank(),
         runtime_context_.size());
-
     std::optional<std::filesystem::path> checkpoint_directory;
     std::optional<time::TimeStepper> restored_stepper;
     std::exception_ptr preparation_exception;
@@ -597,7 +597,16 @@ void SimulationRunner::record_memory_sample(std::string_view phase) {
         gathered_fields.assign(local_fields.begin(), local_fields.end());
     }
 
-    if (runtime_context_.rank() != 0) return;
+    if (runtime_context_.rank() != 0) {
+        if (diagnostics_enabled) {
+            synchronize_exception_or_rethrow(
+                runtime_context_.mpi_active(),
+                nullptr,
+                runtime_context_.size(),
+                "Runtime memory telemetry sample publication");
+        }
+        return;
+    }
 
     const std::uint64_t unavailable_min =
         std::numeric_limits<std::uint64_t>::max();
@@ -673,22 +682,32 @@ void SimulationRunner::record_memory_sample(std::string_view phase) {
     }
 
     if (!diagnostics_enabled) return;
-    MemoryTimelineSample sample;
-    sample.sequence = checked_size_to_u64(
-        memory_samples_.size(), "Memory timeline sequence");
-    sample.step = checked_size_to_u64(current_step_, "Memory timeline step");
-    sample.scale_factor = current_a_;
-    sample.phase.assign(phase.begin(), phase.end());
-    sample.observed_rank_count = observed_rank_count;
-    sample.current_rss_bytes_min = minima[0];
-    sample.current_rss_bytes_max = maxima[0];
-    sample.peak_rss_bytes_min = minima[1];
-    sample.peak_rss_bytes_max = maxima[1];
-    sample.owned_particles_min = minima[2];
-    sample.owned_particles_max = maxima[2];
-    sample.ghost_particles_min = minima[3];
-    sample.ghost_particles_max = maxima[3];
-    memory_samples_.push_back(std::move(sample));
+    std::exception_ptr sample_exception;
+    try {
+        MemoryTimelineSample sample;
+        sample.sequence = checked_size_to_u64(
+            memory_samples_.size(), "Memory timeline sequence");
+        sample.step = checked_size_to_u64(current_step_, "Memory timeline step");
+        sample.scale_factor = current_a_;
+        sample.phase.assign(phase.begin(), phase.end());
+        sample.observed_rank_count = observed_rank_count;
+        sample.current_rss_bytes_min = minima[0];
+        sample.current_rss_bytes_max = maxima[0];
+        sample.peak_rss_bytes_min = minima[1];
+        sample.peak_rss_bytes_max = maxima[1];
+        sample.owned_particles_min = minima[2];
+        sample.owned_particles_max = maxima[2];
+        sample.ghost_particles_min = minima[3];
+        sample.ghost_particles_max = maxima[3];
+        memory_samples_.push_back(std::move(sample));
+    } catch (...) {
+        sample_exception = std::current_exception();
+    }
+    synchronize_exception_or_rethrow(
+        runtime_context_.mpi_active(),
+        sample_exception,
+        runtime_context_.size(),
+        "Runtime memory telemetry sample publication");
 }
 
 void SimulationRunner::write_memory_timeline() const {
@@ -700,7 +719,7 @@ void SimulationRunner::write_memory_timeline() const {
     std::ostringstream out;
     out << std::setprecision(17);
     out << "{\n"
-        << "  \"schema\": \"hyowon.runtime_memory_timeline.v1\",\n"
+        << "  \"schema\": \"hyowon.runtime_memory_timeline\",\n"
         << "  \"measurement_only\": true,\n"
 #if defined(__linux__)
         << "  \"rss_source\": \"linux_proc_self_status_vmrss_vmhwm\",\n"
@@ -986,8 +1005,6 @@ void SimulationRunner::run() {
         gravity::PMForceDiagnostics diagnostics{};
     };
     std::optional<ForcePotentialSample> latest_force_potential;
-    const bool request_reused_pm_potential =
-        diagnostics_enabled && static_cast<bool>(pm_solver_);
 
     auto force_func = [&] (
         std::span<const core::Real>,
@@ -1009,9 +1026,6 @@ void SimulationRunner::run() {
                     TimingPhase::ForceRefreshTotal,
                     TimingClock::now() - force_refresh_start);
             }
-            // Keep operational RSS collection outside the measured force
-            // interval so the telemetry collective cannot inflate solver
-            // timing. Peak RSS still includes the completed force work.
             record_memory_sample("post_force");
         };
 
@@ -1046,10 +1060,6 @@ void SimulationRunner::run() {
         auto az = particles_.mutable_accelerations_z();
         const std::size_t owned = particles_.num_owned_particles();
         if (pm_solver_) {
-            // Leapfrog zeros the pre-partition storage before invoking this
-            // callback. MPI partitioning can reorder or resize owned particles,
-            // so overwrite the post-partition spans explicitly before the PM
-            // gather-add operator consumes them.
             if (runtime_context_.mpi_active()) {
 #ifdef COSMO_NBODY_HAS_OPENMP
                 #pragma omp parallel for schedule(static) \
@@ -1064,6 +1074,9 @@ void SimulationRunner::run() {
             const auto timing_start = lightweight_performance_timing
                 ? TimingClock::now()
                 : TimingClock::time_point{};
+            // Keep the force-produced real-space potential alive for the
+            // synchronized post-K2 force-energy measurement. Requesting the old
+            // inline energy scalar can consume that field in distributed PM.
             auto pm_diagnostics = pm_solver_->compute_forces(
                 particles_.get_positions_x().first(owned),
                 particles_.get_positions_y().first(owned),
@@ -1075,16 +1088,15 @@ void SimulationRunner::run() {
                 ax.first(owned),
                 ay.first(owned),
                 az.first(owned),
-                request_reused_pm_potential);
+                false);
             if (lightweight_performance_timing) {
                 record_phase_timing(
                     TimingPhase::GravitySolve,
                     TimingClock::now() - timing_start);
             }
             if (pm_diagnostics.has_value()) {
-                latest_force_potential = ForcePotentialSample{
-                    force_scale_factor,
-                    *pm_diagnostics};
+                throw std::logic_error(
+                    "Pure-PM no-collection force path unexpectedly returned energy diagnostics");
             }
             sample_force_balance(ax, ay, az, owned);
             finish_force();
@@ -1137,6 +1149,7 @@ void SimulationRunner::run() {
 
     std::unique_ptr<validation::ConservationChecks> conservation;
     validation::ConservationState li_state;
+    validation::ForceEnergyWorkState force_energy_work_state;
     core::Real max_li_ratio = 0.0;
     bool li_ratio_undefined = false;
     std::uint64_t li_sample_count = 0;
@@ -1144,6 +1157,67 @@ void SimulationRunner::run() {
     std::optional<validation::LayzerIrvineSampleRecord> max_li_sample;
     std::vector<validation::LayzerIrvineSampleRecord> li_samples;
     const bool collect_layzer_irvine = diagnostics_enabled;
+    const bool collect_force_energy_work =
+        collect_layzer_irvine && static_cast<bool>(pm_solver_);
+
+    struct PurePMEndpointDiagnostic {
+        core::Real scale_factor{0.0};
+        gravity::PMPostForceEnergyDiagnostics pm{};
+        core::Real cic_self_energy_physical{0.0};
+        validation::ForceEnergyWorkPoint work{};
+    };
+    std::optional<PurePMEndpointDiagnostic> latest_pure_pm_endpoint;
+
+    const auto capture_pure_pm_endpoint = [&] (core::Real scale_factor) {
+        latest_pure_pm_endpoint.reset();
+        if (!collect_force_energy_work) return;
+        if (!conservation || !pm_solver_) {
+            throw std::logic_error(
+                "Pure-PM force-energy endpoint requested without initialized diagnostics");
+        }
+        const std::size_t owned = particles_.num_owned_particles();
+        const auto explicit_masses = particles_.get_uniform_mass().has_value()
+            ? std::span<const core::Real>{}
+            : particles_.get_masses().first(owned);
+        const auto pm = pm_solver_->measure_post_force_energy_diagnostics(
+            particles_.get_positions_x().first(owned),
+            particles_.get_positions_y().first(owned),
+            particles_.get_positions_z().first(owned),
+            explicit_masses,
+            particles_.get_uniform_mass(),
+            particles_.get_momenta_x().first(owned),
+            particles_.get_momenta_y().first(owned),
+            particles_.get_momenta_z().first(owned));
+
+        const core::Real self_physical =
+            pm.cic_self_energy_comoving.has_value()
+            ? *pm.cic_self_energy_comoving / scale_factor
+            : conservation->compute_cic_self_energy(particles_, scale_factor);
+        const core::Real self_directional =
+            pm.directional_cic_self_energy_comoving.has_value()
+            ? *pm.directional_cic_self_energy_comoving
+            : conservation->compute_cic_self_energy_momentum_directional_comoving(
+                  particles_);
+        if (!std::isfinite(self_physical)
+            || !std::isfinite(self_directional)) {
+            throw std::overflow_error(
+                "Pure-PM self-energy endpoint diagnostic is non-finite");
+        }
+
+        const core::Real momentum_force =
+            conservation->compute_momentum_force_contraction(particles_);
+        const auto work = validation::make_force_energy_work_point(
+            scale_factor,
+            cosmo_model_.H(scale_factor),
+            momentum_force,
+            pm.directional_potential_energy_comoving,
+            self_directional);
+        latest_pure_pm_endpoint = PurePMEndpointDiagnostic{
+            scale_factor,
+            pm,
+            self_physical,
+            work};
+    };
 
     struct PotentialDiagnosticSample {
         core::Real raw{0.0};
@@ -1156,6 +1230,21 @@ void SimulationRunner::run() {
             throw std::logic_error(
                 "Layzer-Irvine potential diagnostic requested without conservation state");
         }
+        const bool reusable_pure_pm = latest_pure_pm_endpoint.has_value()
+            && latest_pure_pm_endpoint->scale_factor == scale_factor;
+        if (reusable_pure_pm) {
+            const core::Real raw =
+                latest_pure_pm_endpoint->pm.potential_energy_comoving
+                / scale_factor;
+            const core::Real self =
+                latest_pure_pm_endpoint->cic_self_energy_physical;
+            if (!std::isfinite(raw) || !std::isfinite(self)) {
+                throw std::overflow_error(
+                    "Layzer-Irvine pure-PM endpoint energy is non-finite");
+            }
+            return PotentialDiagnosticSample{raw, self, true};
+        }
+
         const bool reusable = latest_force_potential.has_value()
             && latest_force_potential->scale_factor == scale_factor;
         if (reusable) {
@@ -1213,16 +1302,15 @@ void SimulationRunner::run() {
             "Layzer-Irvine diagnostic storage setup");
 
         if (!runtime_context_.mpi_active()) {
-            // Only 27 impulse-response values are retained. Build them while
-            // no PM force mesh is live, then release the temporary diagnostic
-            // mesh before the first force refresh. Distributed PM supplies its
-            // own self term and must not allocate this replicated preparation.
             record_memory_sample("before_self_kernel");
             conservation->prepare_cic_self_kernel();
             record_memory_sample("after_self_kernel");
         }
-        if (request_reused_pm_potential || treepm_solver_) {
+        if (pm_solver_ || treepm_solver_) {
             integrator.ensure_force_at(current_a_);
+        }
+        if (collect_force_energy_work) {
+            capture_pure_pm_endpoint(current_a_);
         }
         const PotentialDiagnosticSample initial_potential =
             evaluate_potential_diagnostic(current_a_);
@@ -1230,6 +1318,15 @@ void SimulationRunner::run() {
             initial_potential.raw - initial_potential.self;
         conservation->reset_state(
             particles_, current_a_, W0, li_state);
+        if (collect_force_energy_work) {
+            if (!latest_pure_pm_endpoint.has_value()) {
+                throw std::logic_error(
+                    "Initial pure-PM force-energy endpoint was not captured");
+            }
+            validation::reset_force_energy_work_state(
+                latest_pure_pm_endpoint->work,
+                force_energy_work_state);
+        }
         last_layzer_irvine_max_ratio_ = 0.0;
     } else {
         last_layzer_irvine_max_ratio_ =
@@ -1244,17 +1341,19 @@ void SimulationRunner::run() {
         ++next_snapshot_index;
     }
 
-    // A resumed execution publishes into its own artifact directory. A final
-    // snapshot in the parent run is not an output of this execution segment.
     bool final_snapshot_written = false;
     const std::uint64_t restart_cadence =
         config_.get_output().restart_cadence_steps;
 
     while (const auto step = stepper.next_step()) {
         latest_force_potential.reset();
+        latest_pure_pm_endpoint.reset();
         integrator.step(*step);
         current_a_ = step->a_end();
         current_step_ = stepper.current_step();
+        if (collect_force_energy_work) {
+            capture_pure_pm_endpoint(current_a_);
+        }
 
         auto step_drift = integrator.last_step_max_drift_displacement();
         int local_invalid = step_drift.has_value() ? 0 : 1;
@@ -1331,6 +1430,25 @@ void SimulationRunner::run() {
             sample.residual = residual;
             sample.ratio = li_ratio;
             sample.reused_force_potential = potential.reused_force_potential;
+            if (collect_force_energy_work) {
+                if (!latest_pure_pm_endpoint.has_value()) {
+                    throw std::logic_error(
+                        "Pure-PM force-energy endpoint is unavailable after K2");
+                }
+                const auto work_start = force_energy_work_state.previous;
+                validation::update_force_energy_work_state(
+                    latest_pure_pm_endpoint->work,
+                    sample.delta_ln_a,
+                    force_energy_work_state);
+                sample.force_energy_work =
+                    validation::ForceEnergyWorkIntervalRecord{
+                        work_start,
+                        latest_pure_pm_endpoint->work,
+                        force_energy_work_state.integrated_work,
+                        force_energy_work_state.integrated_work_compensation,
+                        validation::force_energy_closure_residual(
+                            residual, force_energy_work_state)};
+            }
             if (runtime_context_.rank() == 0) {
                 li_samples.push_back(sample);
             }
@@ -1481,11 +1599,6 @@ void SimulationRunner::run() {
         }
     }
 
-    // Publish the Layzer-Irvine series before the final snapshot so the
-    // evolved-state diagnostic has an independently durable artifact. The
-    // aggregate diagnostic report is deliberately deferred until after the
-    // final snapshot and terminal memory sample so its memory summary covers
-    // the complete execution, including final-output high-water usage.
     std::exception_ptr li_timeline_exception;
     if (diagnostics_enabled && runtime_context_.rank() == 0) {
         try {
@@ -1518,9 +1631,6 @@ void SimulationRunner::run() {
         record_memory_sample("post_snapshot");
     }
 
-    // This sample is independent of physical diagnostics. Process high-water
-    // survives transient force, snapshot, and restart allocations and therefore
-    // records final operational memory telemetry without controlling execution.
     record_memory_sample("terminal");
 
     if (diagnostics_enabled) {
@@ -1553,9 +1663,6 @@ void SimulationRunner::run() {
         runtime_context_.size(),
         "Runtime memory timeline publication");
 
-    // Performance telemetry is deliberately published only after the final
-    // scientific snapshot is durable. Failure to aggregate the measurements
-    // cannot prevent the simulation product from being written.
     report_phase_timings();
 }
 

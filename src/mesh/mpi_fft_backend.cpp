@@ -336,7 +336,7 @@ MpiFFTBackend::MpiFFTBackend(
         planning_record.backend = "fftw_mpi";
         planning_record.planner_rigor = "estimate";
         planning_record.planner_schema =
-            "fftw_mpi_r2c_c2r_3d_out_of_place_v2";
+            "fftw_mpi_r2c_c2r_3d_out_of_place";
         planning_record.planner_flags =
             "FFTW_ESTIMATE;wisdom_cleared_before_collective_planning";
         planning_record.wisdom_cache_policy = "disabled_and_cleared";

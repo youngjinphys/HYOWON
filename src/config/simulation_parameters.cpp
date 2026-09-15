@@ -329,8 +329,8 @@ void SimulationParameters::validate_initial_conditions() {
             throw std::invalid_argument(
                 "Snapshot IC configuration cannot carry generated-IC scientific coordinates");
         }
-        // Normalize inactive fields for legacy serialization only after
-        // snapshot-mode admission rejects every generated-IC coordinate.
+        // Canonicalize inactive generated-IC fields only after snapshot-mode
+        // admission rejects every generated-IC coordinate.
         ic.seed = std::uint64_t{0};
         ic.mesh_per_dimension = std::uint64_t{0};
     }

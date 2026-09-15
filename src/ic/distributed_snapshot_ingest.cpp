@@ -128,8 +128,18 @@ std::vector<std::uint64_t> count_final_owner_population(
     std::size_t batch_count,
     int rank,
     int size) {
-    std::vector<std::uint64_t> owner_counts(
-        static_cast<std::size_t>(size), 0);
+    std::vector<std::uint64_t> owner_counts;
+    std::exception_ptr allocation_exception;
+    try {
+        owner_counts.assign(static_cast<std::size_t>(size), 0);
+    } catch (...) {
+        allocation_exception = std::current_exception();
+    }
+    runtime::synchronize_mpi_exception(
+        allocation_exception,
+        size,
+        "Distributed snapshot IC owner-population storage allocation");
+
     std::exception_ptr count_exception;
     if (rank == 0) {
         try {

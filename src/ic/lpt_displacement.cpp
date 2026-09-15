@@ -1,7 +1,7 @@
 #include "cosmo_nbody/ic/lpt_displacement.hpp"
 #include "cosmo_nbody/ic/particle_lattice_bandlimit.hpp"
-#include "cosmo_nbody/mesh/fourier_hessian.hpp"
 #include "cosmo_nbody/math/periodic_box.hpp"
+#include "cosmo_nbody/mesh/fourier_hessian.hpp"
 #include "cosmo_nbody/runtime/raw_scratch_buffer.hpp"
 #include "cosmo_nbody/runtime/real_scratch_buffer.hpp"
 #include "cosmo_nbody/runtime/thread_policy.hpp"
@@ -409,8 +409,9 @@ void apply_to_arrays_impl(
                         psi_k[index] = {0.0, 0.0};
                         continue;
                     }
-                    const core::Real numerator = mesh::real_fourier_hessian_numerator(
-                        dim_a, dim_b, full_k, nyquist);
+                    const core::Real numerator =
+                        mesh::real_fourier_hessian_numerator(
+                            dim_a, dim_b, full_k, nyquist);
                     psi_k[index] = (*first_order_source)[index]
                         * (numerator / k2);
                 }

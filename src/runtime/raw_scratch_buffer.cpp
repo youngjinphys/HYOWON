@@ -64,7 +64,20 @@ RawScratchBuffer::RawScratchBuffer(
                 "mkstemp failed for raw scratch: "
                 + std::string(std::strerror(errno)));
         }
-        (void)::unlink(writable.data());
+        int unlink_status = 0;
+        do {
+            unlink_status = ::unlink(writable.data());
+        } while (unlink_status != 0 && errno == EINTR);
+        if (unlink_status != 0) {
+            const int error = errno;
+            // Construction has not completed: no destructor will close fd_.
+            // Release it before formatting an error, which can itself allocate.
+            (void)::close(fd_);
+            fd_ = -1;
+            throw std::runtime_error(
+                "unlink failed for raw scratch; empty file may remain at '"
+                + std::string(writable.data()) + "': " + std::strerror(error));
+        }
         try {
             // The backing-store allocation itself is authoritative. A separate
             // statvfs-style free-space prediction with an arbitrary reserve can
@@ -84,11 +97,12 @@ RawScratchBuffer::RawScratchBuffer(
             fd_,
             0);
         if (mapping == MAP_FAILED) {
-            const std::string message = std::strerror(errno);
-            ::close(fd_);
+            const int error = errno;
+            (void)::close(fd_);
             fd_ = -1;
             throw std::runtime_error(
-                "mmap failed for raw scratch: " + message);
+                "mmap failed for raw scratch: "
+                + std::string(std::strerror(error)));
         }
         try {
             advise_mutable_scratch_mapping(mapping, bytes_, label_);
@@ -98,6 +112,11 @@ RawScratchBuffer::RawScratchBuffer(
             fd_ = -1;
             throw;
         }
+        // mmap owns an independent reference to the unlinked backing file.
+        // Retaining one descriptor per live buffer is unnecessary and can
+        // exhaust RLIMIT_NOFILE while ample mapping/backing capacity remains.
+        (void)::close(fd_);
+        fd_ = -1;
         data_ = mapping;
         file_backed_ = true;
         return;

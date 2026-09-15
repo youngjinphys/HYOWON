@@ -622,12 +622,10 @@
                             run_metadata);
                     SnapshotIO native_reader(config_);
                     core::ParticleStore validation_batch;
-                    const auto validation_capacity = static_cast<std::size_t>(std::min(
-                        transfer_batch, *std::max_element(rank_counts.begin(), rank_counts.end())));
                     batch_buffers.coordinates.resize(
-                        validation_capacity * 3U);
+                        static_cast<std::size_t>(transfer_batch) * 3U);
                     batch_buffers.velocities.resize(
-                        validation_capacity * 3U);
+                        static_cast<std::size_t>(transfer_batch) * 3U);
                     for (int expected_rank = 0;
                          expected_rank < mpi_size; ++expected_rank) {
                         Sha256Accumulator observed_coordinates;

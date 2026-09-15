@@ -99,6 +99,18 @@ bool paths_alias(
     return equivalent;
 }
 
+void require_destination_distinct_from_input(
+    const std::filesystem::path& destination,
+    const char* destination_role,
+    const std::filesystem::path& input,
+    const char* input_role) {
+    if (paths_alias(destination, input)) {
+        throw std::invalid_argument(
+            std::string(destination_role) + " must not alias " + input_role
+            + ": '" + destination.string() + "'");
+    }
+}
+
 void invalidate_existing_evidence_before_snapshot_replace(
     const std::filesystem::path& path) {
     if (!path_present(path)) return;
@@ -179,8 +191,9 @@ int main(int argc, char** argv) {
 
     try {
         const Options options = parse_options(argc, argv);
-        const config::SimulationParameters config =
-            config::ConfigLoader::load(options.config_path);
+        const config::LoadedSimulationConfig loaded_config =
+            config::ConfigLoader::load_with_identity(options.config_path);
+        const config::SimulationParameters& config = loaded_config.parameters;
         if (config.get_ic().mode != "generate") {
             throw std::invalid_argument(
                 "hyowon_make_ic accepts only ic.mode='generate'; use the original snapshot directly instead of laundering it through a new IC artifact");
@@ -190,15 +203,39 @@ int main(int argc, char** argv) {
                 "hyowon_make_ic does not support distributed MPI output; generate the canonical IC with a serial configuration so one complete particle population is written");
         }
 
+        const std::filesystem::path config_path(options.config_path);
+        const std::filesystem::path spectrum_path(
+            config.get_ic().power_spectrum_file);
         const std::filesystem::path output(options.output_path);
         const std::filesystem::path evidence_path(options.evidence_path);
-        ensure_parent_directory(output);
+
+        // --overwrite authorizes replacement of destinations, not destruction
+        // of the scientific inputs that define those destinations. Check both
+        // path spellings and existing filesystem-object identity (hard links).
+        require_destination_distinct_from_input(
+            output, "IC output", config_path, "the source config");
+        require_destination_distinct_from_input(
+            output, "IC output", spectrum_path, "the linear power spectrum");
         if (!options.evidence_path.empty()) {
-            ensure_parent_directory(evidence_path);
+            require_destination_distinct_from_input(
+                evidence_path,
+                "IC evidence output",
+                config_path,
+                "the source config");
+            require_destination_distinct_from_input(
+                evidence_path,
+                "IC evidence output",
+                spectrum_path,
+                "the linear power spectrum");
             if (paths_alias(output, evidence_path)) {
                 throw std::invalid_argument(
                     "--output and --evidence must name distinct filesystem objects");
             }
+        }
+
+        ensure_parent_directory(output);
+        if (!options.evidence_path.empty()) {
+            ensure_parent_directory(evidence_path);
         }
 
         require_output_admissible(
@@ -249,6 +286,8 @@ int main(int argc, char** argv) {
                       << "  source: " << build_info::SOURCE_COMMIT
                       << " (" << build_info::SOURCE_STATE << ", "
                       << build_info::SOURCE_CAPTURE_PHASE << ")\n"
+                      << "  source_config_sha256: "
+                      << loaded_config.source_sha256 << "\n"
                       << "  native_snapshot_object_sha256: "
                       << snapshot_sha256 << "\n";
 
@@ -257,7 +296,6 @@ int main(int argc, char** argv) {
                 evidence_json
                     << "{\n"
                     << "  \"product_kind\": \"generated_ic_export_evidence\",\n"
-                    << "  \"schema_version\": 1,\n"
                     << "  \"verdict_semantics\": false,\n"
                     << "  \"scientific_accuracy_certificate\": false,\n"
                     << "  \"interpretation\": \"generated_ic_measurements_and_provenance_require_independent_physical_validation\",\n"
@@ -270,6 +308,8 @@ int main(int argc, char** argv) {
                     << build_info::SOURCE_STATE << "\",\n"
                     << "  \"build_source_capture_phase\": \""
                     << build_info::SOURCE_CAPTURE_PHASE << "\",\n"
+                    << "  \"source_config_sha256\": \""
+                    << loaded_config.source_sha256 << "\",\n"
                     << "  \"native_snapshot_object_sha256\": \""
                     << snapshot_sha256 << "\",\n"
                     << "  \"realised_initial_conditions\": "

@@ -301,30 +301,36 @@ void CICMassAssignment::deposit_impl(
             "CIC memory plan returned an invalid active worker count");
     }
 
-    std::vector<std::size_t> worker_boundaries;
+    // Build the minimax partition and exception storage on the caller thread.
+    // No allocation or exception is then allowed to escape an OpenMP structured
+    // block. Iterate logical workers rather than binding work to omp thread IDs;
+    // even an unexpectedly smaller runtime team still executes every range.
+    const std::vector<std::size_t> worker_boundaries =
+        detail::weighted_contiguous_plane_boundaries(
+            task_particle_visits, planned_workers);
+    if (worker_boundaries.size() != planned_workers + 1
+        || worker_boundaries.front() != 0
+        || worker_boundaries.back() != plane_tasks) {
+        throw std::logic_error(
+            "CIC weighted plane partition returned invalid boundaries");
+    }
+    std::vector<std::exception_ptr> worker_exceptions(planned_workers);
 #ifdef COSMO_NBODY_HAS_OPENMP
-    #pragma omp parallel num_threads(static_cast<int>(planned_workers)) \
-        if(planned_workers > 1)
-    {
-        const std::size_t worker = static_cast<std::size_t>(
-            omp_get_thread_num());
-        #pragma omp single
-        {
-            worker_boundaries = detail::weighted_contiguous_plane_boundaries(
-                task_particle_visits,
-                static_cast<std::size_t>(omp_get_num_threads()));
-        }
-        for (std::size_t task = worker_boundaries[worker];
-             task < worker_boundaries[worker + 1];
-             ++task) {
-            deposit_plane_task(task);
-        }
-    }
-#else
-    worker_boundaries = detail::weighted_contiguous_plane_boundaries(
-        task_particle_visits, 1);
-    for (std::size_t task = 0; task < plane_tasks; ++task) {
-        deposit_plane_task(task);
-    }
+    #pragma omp parallel for num_threads(static_cast<int>(planned_workers)) \
+        schedule(static, 1) if(planned_workers > 1)
 #endif
+    for (std::size_t worker = 0; worker < planned_workers; ++worker) {
+        try {
+            for (std::size_t task = worker_boundaries[worker];
+                 task < worker_boundaries[worker + 1];
+                 ++task) {
+                deposit_plane_task(task);
+            }
+        } catch (...) {
+            worker_exceptions[worker] = std::current_exception();
+        }
+    }
+    for (const auto& exception : worker_exceptions) {
+        if (exception) std::rethrow_exception(exception);
+    }
 }

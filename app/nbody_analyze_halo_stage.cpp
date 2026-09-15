@@ -9,12 +9,14 @@
 #include "cosmo_nbody/analysis/halo_mass_function.hpp"
 #include "cosmo_nbody/analysis/halo_shape.hpp"
 #include "cosmo_nbody/analysis/two_point_correlation.hpp"
+#include "cosmo_nbody/cosmology/units.hpp"
 #include "cosmo_nbody/halo/fof_membership.hpp"
 #include "cosmo_nbody/io/checked_output_file.hpp"
 #include "cosmo_nbody/io/fof_analysis_catalog.hpp"
 #include "cosmo_nbody/io/output_schema.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <memory>
 #include <stdexcept>
@@ -82,6 +84,16 @@ analysis::HaloShapeOptions shape_options_from_request(
     return options;
 }
 
+core::Real hmf_mass_msun_h_to_native(core::Real mass_msun_h) {
+    const core::Real native =
+        mass_msun_h / cosmology::units::MassUnit_in_Msun_per_h;
+    if (!std::isfinite(native) || native <= 0.0) {
+        throw std::overflow_error(
+            "HMF mass bound in Msun/h is not representable in HYOWON native mass units");
+    }
+    return native;
+}
+
 } // namespace
 
 HaloStageResult run_halo_stage(
@@ -144,8 +156,8 @@ HaloStageResult run_halo_stage(
             masses.push_back(property.mass);
         }
         analysis::HaloMassFunctionOptions options;
-        options.min_mass = *request.hmf_min_mass;
-        options.max_mass = *request.hmf_max_mass;
+        options.min_mass = hmf_mass_msun_h_to_native(*request.hmf_min_mass);
+        options.max_mass = hmf_mass_msun_h_to_native(*request.hmf_max_mass);
         options.num_bins = request.hmf_bins;
         options.mass_definition = io::schema::VAL_FOF_MASS_DEFINITION;
         const auto hmf = analysis::HaloMassFunction::compute(
@@ -160,16 +172,15 @@ HaloStageResult run_halo_stage(
             request.fof_min_particles);
     }
 
-    std::vector<core::Vec3> centers;
-    centers.reserve(properties.size());
-    for (const auto& property : properties) {
-        centers.push_back(property.center_of_mass);
-    }
-
     if (request.xi_min_radius.has_value()) {
-        if (centers.size() < 2) {
+        if (properties.size() < 2) {
             throw std::runtime_error(
                 "Requested candidate-center 2PCF requires at least two FoF candidates");
+        }
+        std::vector<core::Vec3> centers;
+        centers.reserve(properties.size());
+        for (const auto& property : properties) {
+            centers.push_back(property.center_of_mass);
         }
         analysis::TwoPointOptions options;
         options.min_radius = *request.xi_min_radius;
@@ -304,7 +315,6 @@ HaloStageResult run_halo_stage(
             memberships, properties, particles);
     }
 
-    std::vector<core::Vec3>{}.swap(centers);
     release_memberships(memberships);
     std::vector<analysis::HaloDerivedProperties>{}.swap(properties);
     return result;

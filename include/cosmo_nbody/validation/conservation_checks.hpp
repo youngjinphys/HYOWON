@@ -71,6 +71,18 @@ public:
         const core::ParticleStore& particles,
         core::Real current_a) const;
 
+    // Directional derivative D_p U0,self of the cached comoving CIC self energy,
+    // using endpoint canonical momentum p as the particle-coordinate direction.
+    // The selected-cell one-sided derivative is used at exact CIC boundaries.
+    core::Real compute_cic_self_energy_momentum_directional_comoving(
+        const core::ParticleStore& particles) const;
+
+    // Sum over owned particles of m_i p_i . g_i. Under MPI the returned scalar
+    // is accumulated in rank order; it is a measurement of the current force
+    // state and does not alter acceleration storage.
+    core::Real compute_momentum_force_contraction(
+        const core::ParticleStore& particles) const;
+
     // Prepare only the cached 27-lag self kernel, borrowing an existing potential
     // workspace or releasing a temporary one. Lazy diagnostic caches are not concurrent.
     void prepare_cic_self_kernel() const;

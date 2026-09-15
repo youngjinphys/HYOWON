@@ -155,14 +155,15 @@ struct StructuralAccumulator {
     ScaledSquaredNorm momentum_norm;
     long double displacement_max{0.0L};
     long double momentum_max{0.0L};
-    long double forward_jacobian_min{
+    long double forward_cell_edge_determinant_min{
         std::numeric_limits<long double>::infinity()};
-    long double forward_jacobian_max{
+    long double forward_cell_edge_determinant_max{
         -std::numeric_limits<long double>::infinity()};
-    std::size_t forward_jacobian_nonpositive_count{0};
+    std::size_t forward_cell_edge_determinant_evaluated_count{0};
+    std::size_t forward_cell_edge_determinant_unevaluable_count{0};
+    std::size_t forward_cell_edge_determinant_nonpositive_count{0};
     bool non_finite{false};
     bool out_of_box{false};
-    bool forward_jacobian_invalid{false};
 };
 
 } // namespace
@@ -192,7 +193,7 @@ RealisedICSummary validate_realised_lattice_ic(
 
     const core::Real spacing = box_size_Mpc_h
         / static_cast<core::Real>(particles_per_dimension);
-    const bool forward_jacobian_requested = particles_per_dimension >= 3;
+    const bool forward_cell_edge_requested = particles_per_dimension >= 3;
     const long double inverse_spacing = 1.0L
         / static_cast<long double>(spacing);
     if (!std::isfinite(inverse_spacing) || inverse_spacing <= 0.0L) {
@@ -266,7 +267,7 @@ RealisedICSummary validate_realised_lattice_ic(
                 accumulator.momentum_max,
                 core::scale_safe_norm3(lpx, lpy, lpz));
 
-            if (forward_jacobian_requested) {
+            if (forward_cell_edge_requested) {
                 const std::size_t i_plus = i + 1 == particles_per_dimension
                     ? 0 : i + 1;
                 const std::size_t j_plus = j + 1 == particles_per_dimension
@@ -314,7 +315,7 @@ RealisedICSummary validate_realised_lattice_ic(
                     || !std::isfinite(columns[2][0])
                     || !std::isfinite(columns[2][1])
                     || !std::isfinite(columns[2][2])) {
-                    accumulator.forward_jacobian_invalid = true;
+                    ++accumulator.forward_cell_edge_determinant_unevaluable_count;
                     continue;
                 }
 
@@ -332,15 +333,16 @@ RealisedICSummary validate_realised_lattice_ic(
                     - a01 * (a10 * a22 - a12 * a20)
                     + a02 * (a10 * a21 - a11 * a20);
                 if (!std::isfinite(determinant)) {
-                    accumulator.forward_jacobian_invalid = true;
+                    ++accumulator.forward_cell_edge_determinant_unevaluable_count;
                     continue;
                 }
-                accumulator.forward_jacobian_min = std::min(
-                    accumulator.forward_jacobian_min, determinant);
-                accumulator.forward_jacobian_max = std::max(
-                    accumulator.forward_jacobian_max, determinant);
+                ++accumulator.forward_cell_edge_determinant_evaluated_count;
+                accumulator.forward_cell_edge_determinant_min = std::min(
+                    accumulator.forward_cell_edge_determinant_min, determinant);
+                accumulator.forward_cell_edge_determinant_max = std::max(
+                    accumulator.forward_cell_edge_determinant_max, determinant);
                 if (determinant <= 0.0L) {
-                    ++accumulator.forward_jacobian_nonpositive_count;
+                    ++accumulator.forward_cell_edge_determinant_nonpositive_count;
                 }
             }
         }
@@ -350,12 +352,13 @@ RealisedICSummary validate_realised_lattice_ic(
     ScaledSquaredNorm momentum_norm;
     long double displacement_max = 0.0L;
     long double momentum_max = 0.0L;
-    long double forward_jacobian_min =
+    long double forward_cell_edge_determinant_min =
         std::numeric_limits<long double>::infinity();
-    long double forward_jacobian_max =
+    long double forward_cell_edge_determinant_max =
         -std::numeric_limits<long double>::infinity();
-    std::size_t forward_jacobian_nonpositive_count = 0;
-    bool forward_jacobian_available = forward_jacobian_requested;
+    std::size_t forward_cell_edge_determinant_evaluated_count = 0;
+    std::size_t forward_cell_edge_determinant_unevaluable_count = 0;
+    std::size_t forward_cell_edge_determinant_nonpositive_count = 0;
     for (const auto& block : blocks) {
         if (block.non_finite) {
             throw std::runtime_error(
@@ -365,21 +368,56 @@ RealisedICSummary validate_realised_lattice_ic(
             throw std::runtime_error(
                 "Generated initial-condition positions must lie in [0, L)");
         }
-        if (block.forward_jacobian_invalid) {
-            forward_jacobian_available = false;
-        }
         displacement_norm.merge(block.displacement_norm);
         momentum_norm.merge(block.momentum_norm);
         displacement_max = std::max(displacement_max, block.displacement_max);
         momentum_max = std::max(momentum_max, block.momentum_max);
-        if (forward_jacobian_requested && !block.forward_jacobian_invalid) {
-            forward_jacobian_min = std::min(
-                forward_jacobian_min, block.forward_jacobian_min);
-            forward_jacobian_max = std::max(
-                forward_jacobian_max, block.forward_jacobian_max);
-            forward_jacobian_nonpositive_count +=
-                block.forward_jacobian_nonpositive_count;
+
+        if (block.forward_cell_edge_determinant_evaluated_count != 0U) {
+            forward_cell_edge_determinant_min = std::min(
+                forward_cell_edge_determinant_min,
+                block.forward_cell_edge_determinant_min);
+            forward_cell_edge_determinant_max = std::max(
+                forward_cell_edge_determinant_max,
+                block.forward_cell_edge_determinant_max);
         }
+        if (block.forward_cell_edge_determinant_evaluated_count
+                > std::numeric_limits<std::size_t>::max()
+                    - forward_cell_edge_determinant_evaluated_count
+            || block.forward_cell_edge_determinant_unevaluable_count
+                > std::numeric_limits<std::size_t>::max()
+                    - forward_cell_edge_determinant_unevaluable_count
+            || block.forward_cell_edge_determinant_nonpositive_count
+                > std::numeric_limits<std::size_t>::max()
+                    - forward_cell_edge_determinant_nonpositive_count) {
+            throw std::overflow_error(
+                "Generated initial-condition cell-edge diagnostic count overflow");
+        }
+        forward_cell_edge_determinant_evaluated_count +=
+            block.forward_cell_edge_determinant_evaluated_count;
+        forward_cell_edge_determinant_unevaluable_count +=
+            block.forward_cell_edge_determinant_unevaluable_count;
+        forward_cell_edge_determinant_nonpositive_count +=
+            block.forward_cell_edge_determinant_nonpositive_count;
+    }
+
+    if (forward_cell_edge_requested) {
+        if (forward_cell_edge_determinant_evaluated_count > expected
+            || forward_cell_edge_determinant_unevaluable_count
+                != expected - forward_cell_edge_determinant_evaluated_count) {
+            throw std::logic_error(
+                "Generated initial-condition cell-edge diagnostic population accounting is inconsistent");
+        }
+        if (forward_cell_edge_determinant_nonpositive_count
+            > forward_cell_edge_determinant_evaluated_count) {
+            throw std::logic_error(
+                "Generated initial-condition nonpositive cell-edge count exceeds evaluated count");
+        }
+    } else if (forward_cell_edge_determinant_evaluated_count != 0U
+        || forward_cell_edge_determinant_unevaluable_count != 0U
+        || forward_cell_edge_determinant_nonpositive_count != 0U) {
+        throw std::logic_error(
+            "Generated initial-condition cell-edge diagnostic ran when not requested");
     }
 
     const long double count = static_cast<long double>(expected);
@@ -398,18 +436,23 @@ RealisedICSummary validate_realised_lattice_ic(
         momentum_rms, "momentum RMS");
     summary.momentum_max = representable_summary_value(
         momentum_max, "maximum momentum");
-    summary.forward_jacobian_available = forward_jacobian_available;
-    if (forward_jacobian_available) {
-        summary.forward_jacobian_determinant_min =
+    summary.forward_cell_edge_determinant_requested =
+        forward_cell_edge_requested;
+    summary.forward_cell_edge_determinant_evaluated_count =
+        forward_cell_edge_determinant_evaluated_count;
+    summary.forward_cell_edge_determinant_unevaluable_count =
+        forward_cell_edge_determinant_unevaluable_count;
+    summary.forward_cell_edge_determinant_nonpositive_count =
+        forward_cell_edge_determinant_nonpositive_count;
+    if (forward_cell_edge_determinant_evaluated_count != 0U) {
+        summary.forward_cell_edge_determinant_min =
             representable_signed_summary_value(
-                forward_jacobian_min,
-                "minimum forward Jacobian determinant");
-        summary.forward_jacobian_determinant_max =
+                forward_cell_edge_determinant_min,
+                "minimum forward cell-edge determinant");
+        summary.forward_cell_edge_determinant_max =
             representable_signed_summary_value(
-                forward_jacobian_max,
-                "maximum forward Jacobian determinant");
-        summary.forward_jacobian_nonpositive_count =
-            forward_jacobian_nonpositive_count;
+                forward_cell_edge_determinant_max,
+                "maximum forward cell-edge determinant");
     }
     return summary;
 }

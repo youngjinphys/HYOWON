@@ -4,7 +4,6 @@
 
 #include <cstdint>
 #include <span>
-#include <vector>
 
 namespace cosmo_nbody {
 namespace domain {
@@ -55,8 +54,6 @@ public:
     // ambiguous and can silently double-count mass.
     static void sort_routed_in_place(
         std::span<RoutedExchangeParticle> routed);
-    static std::vector<RoutedExchangeParticle> sort_routed(
-        std::span<const RoutedExchangeParticle> routed);
 
     static void sort_routed_ghosts_in_place(
         std::span<RoutedGhostExchangeParticle> routed);

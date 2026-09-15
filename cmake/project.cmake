@@ -17,8 +17,6 @@ configure_file(
     "${HYOWON_GENERATED_INCLUDE_DIR}/cosmo_nbody/build_info.hpp"
     @ONLY)
 
-# One host-thread authority: disabling OpenMP also defaults FFTW threading off
-# without selecting a different PM/TreePM algorithm.
 option(
     HYOWON_ENABLE_FFTW_THREADS
     "Enable FFTW threaded plans using the OpenMP host-thread policy"
@@ -27,17 +25,13 @@ option(HYOWON_ENABLE_MPI "Enable MPI distributed runtime" OFF)
 option(HYOWON_ENABLE_FFTW_MPI "Enable FFTW-MPI distributed FFT backend" OFF)
 option(HYOWON_BUILD_ANALYZER "Build snapshot-analysis library and hyowon_analyze executable" ON)
 
-# Distributed transport uses MPI while rank 0 writes serial HDF5.
 set(HDF5_NO_FIND_PACKAGE_CONFIG_FILE TRUE)
 find_package(HDF5 MODULE COMPONENTS C REQUIRED)
 
-# Rediscover the base FFTW provider on every configure so a changed/cleared root
-# cannot leave a stale cached base library beside newly selected components.
 unset(FFTW3_INCLUDE_DIR CACHE)
 unset(FFTW3_LIBRARY CACHE)
 
 if(HYOWON_FFTW_ROOT)
-    # An explicit root overrides cached providers from earlier configurations.
     unset(FFTW3_THREADS_LIBRARY CACHE)
     unset(FFTW3_MPI_INCLUDE_DIR CACHE)
     unset(FFTW3_MPI_LIBRARY CACHE)
@@ -62,8 +56,6 @@ else()
     find_library(FFTW3_LIBRARY NAMES fftw3 REQUIRED)
 endif()
 
-# Resolve symlinks before selecting optional libraries so all FFTW components
-# come from the selected base provider directory.
 get_filename_component(
     HYOWON_FFTW_LIBRARY_REALPATH "${FFTW3_LIBRARY}" REALPATH)
 get_filename_component(
@@ -81,7 +73,6 @@ message(STATUS "FFTW base provider directory: ${HYOWON_FFTW_LIBRARY_DIR}")
 if(HYOWON_ENABLE_FFTW_THREADS AND HYOWON_ENABLE_OPENMP)
     unset(FFTW3_THREADS_LIBRARY CACHE)
     unset(HYOWON_FFTW_COMBINED_THREADS CACHE)
-    # Optional FFTW libraries must match the resolved base-library directory.
     find_library(FFTW3_THREADS_LIBRARY NAMES fftw3_threads
         PATHS "${HYOWON_FFTW_LIBRARY_DIR}"
         NO_DEFAULT_PATH)
@@ -123,7 +114,6 @@ if(HYOWON_ENABLE_FFTW_MPI)
     endif()
     unset(FFTW3_MPI_INCLUDE_DIR CACHE)
     unset(FFTW3_MPI_LIBRARY CACHE)
-    # MPI header/library must accompany the selected base FFTW provider.
     find_path(FFTW3_MPI_INCLUDE_DIR fftw3-mpi.h
         PATHS "${FFTW3_INCLUDE_DIR}"
         NO_DEFAULT_PATH REQUIRED)
@@ -134,8 +124,6 @@ if(HYOWON_ENABLE_FFTW_MPI)
     message(STATUS "FFTW-MPI library: ${FFTW3_MPI_LIBRARY}")
 endif()
 
-# Header-only dependency pinned to an immutable source commit; fetching requires
-# Git/network only when the source is not already populated.
 include(FetchContent)
 FetchContent_Declare(
     tomlplusplus
@@ -144,11 +132,15 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(tomlplusplus)
 
-# Evolution/IC/runtime remain the canonical simulator library; passive analysis
-# and halo code is optional and must not change simulation algorithms.
+# Analysis-only snapshot/catalog adapters are excluded from the simulation core.
+set(HYOWON_ANALYSIS_IO_SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/io/analysis_snapshot_reader.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/io/fof_analysis_catalog.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/io/fof_analysis_catalog_durable.cpp")
 file(GLOB_RECURSE HYOWON_LIBRARY_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
 list(FILTER HYOWON_LIBRARY_SOURCES EXCLUDE REGEX "/src/(analysis|halo)/")
+list(REMOVE_ITEM HYOWON_LIBRARY_SOURCES ${HYOWON_ANALYSIS_IO_SOURCES})
 list(SORT HYOWON_LIBRARY_SOURCES)
 
 add_library(hyowon_core STATIC)
@@ -192,7 +184,6 @@ if(HYOWON_ENABLE_MPI)
 endif()
 
 if(HYOWON_ENABLE_FFTW_MPI)
-    # Keep base FFTW and MPI after fftw3_mpi for static/--as-needed linkers.
     target_include_directories(hyowon_core PUBLIC ${FFTW3_MPI_INCLUDE_DIR})
     target_link_libraries(hyowon_core PUBLIC
         ${FFTW3_MPI_LIBRARY}
@@ -216,6 +207,7 @@ if(HYOWON_BUILD_ANALYZER)
     file(GLOB_RECURSE HYOWON_ANALYSIS_SOURCES CONFIGURE_DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/src/analysis/*.cpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/halo/*.cpp")
+    list(APPEND HYOWON_ANALYSIS_SOURCES ${HYOWON_ANALYSIS_IO_SOURCES})
     list(SORT HYOWON_ANALYSIS_SOURCES)
 
     add_library(hyowon_analysis STATIC)
@@ -249,6 +241,7 @@ install(FILES
     "${CMAKE_CURRENT_SOURCE_DIR}/README.md"
     "${CMAKE_CURRENT_SOURCE_DIR}/CHANGELOG.md"
     "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE"
+    "${CMAKE_CURRENT_SOURCE_DIR}/CITATION.cff"
     "${CMAKE_CURRENT_SOURCE_DIR}/THIRD_PARTY_NOTICES.md"
     DESTINATION "${CMAKE_INSTALL_DOCDIR}")
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/examples"

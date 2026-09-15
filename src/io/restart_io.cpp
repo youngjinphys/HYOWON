@@ -239,8 +239,7 @@ int restart_mpi_size(const config::SimulationParameters& config) {
 
 std::string restart_dynamics_descriptor(
     const config::SimulationParameters& config,
-    const std::string& verified_snapshot_ic_sha256,
-    const artifact_schema::RestartSchema& encoding) {
+    const std::string& verified_snapshot_ic_sha256) {
     return detail::render_bounded_text(
         MAXIMUM_PERSISTED_PROVENANCE_TEXT_BYTES,
         [&](std::ostream& out) {
@@ -298,26 +297,18 @@ std::string restart_dynamics_descriptor(
             append_uint("ic_seed", ic.seed);
             append_uint(
                 "ic_mesh_per_dimension", config.ic_mesh_per_dimension());
-            if (encoding.includes_ic_support) {
-                append_bool("ic_max_mode_per_axis_set", ic.max_mode_per_axis.has_value());
-                if (ic.max_mode_per_axis) {
-                    append_uint("ic_max_mode_per_axis", *ic.max_mode_per_axis);
-                }
+            append_bool("ic_max_mode_per_axis_set", ic.max_mode_per_axis.has_value());
+            if (ic.max_mode_per_axis) {
+                append_uint("ic_max_mode_per_axis", *ic.max_mode_per_axis);
             }
             append_string("ic_amplitude_mode", ic.amplitude_mode);
             append_string("ic_phase_pairing", ic.phase_pairing);
-            if (encoding.includes_input_paths) {
-                append_string("ic_power_spectrum_file", ic.power_spectrum_file);
-            }
             append_string(
                 "ic_power_spectrum_sha256", ic.power_spectrum_sha256);
             append_real(
                 "ic_power_spectrum_redshift", ic.power_spectrum_redshift);
             append_string(
                 "ic_power_spectrum_fidelity", ic.power_spectrum_fidelity);
-            if (encoding.includes_input_paths) {
-                append_string("ic_snapshot_file", ic.snapshot_file);
-            }
             append_string(
                 "ic_snapshot_sha256",
                 resolve_verified_snapshot_ic_sha256(
@@ -342,12 +333,10 @@ std::string restart_dynamics_descriptor(
 
 std::string restart_dynamics_sha256(
     const config::SimulationParameters& config,
-    const std::string& verified_snapshot_ic_sha256,
-    const artifact_schema::RestartSchema& encoding) {
+    const std::string& verified_snapshot_ic_sha256) {
     return sha256_text(restart_dynamics_descriptor(
         config,
-        verified_snapshot_ic_sha256,
-        encoding));
+        verified_snapshot_ic_sha256));
 }
 
 std::uint64_t restart_step_u64(const time::TimeStepper& stepper) {
@@ -429,14 +418,13 @@ RestartStateIdentityResult RestartIO::write_restart_with_identity(
             native_identity::SOFTWARE_NAME_STRING);
         write_string_attr(
             file.get(), std::string(artifact_schema::RESTART_ATTRIBUTE),
-            std::string(artifact_schema::CURRENT_RESTART.identity));
+            std::string(artifact_schema::RESTART));
         write_string_attr(
             file.get(), RESTART_PRODUCT_KIND_ATTRIBUTE,
             RESTART_PRODUCT_KIND);
 
         const std::string dynamics_identity = restart_dynamics_sha256(
-            config_, verified_snapshot_ic_sha256,
-            artifact_schema::CURRENT_RESTART);
+            config_, verified_snapshot_ic_sha256);
         state_sha256 = restart_state_sha256(
             config_, particles, stepper, dynamics_identity);
 
@@ -561,15 +549,8 @@ RestartStateIdentityResult RestartIO::read_restart_with_identity(
         file,
         std::string(artifact_schema::RESTART_ATTRIBUTE),
         artifact_schema::MAXIMUM_RESTART_SCHEMA_BYTES);
-    const auto* encoding = artifact_schema::lookup_restart(restart_schema);
-    if (encoding == nullptr) {
+    if (restart_schema != artifact_schema::RESTART) {
         throw std::runtime_error("Restart HYOWON schema is unsupported");
-    }
-    if (!encoding->includes_ic_support && config_.get_ic().mode == "generate") {
-        throw std::runtime_error(
-            "Legacy generated-IC restart does not bind IC Fourier support; "
-            "continue this checkpoint with HYOWON v0.0.1. "
-            "New v0.0.2 runs write support-bound restart checkpoints");
     }
     const std::string product_kind = read_string_attr(
         file, RESTART_PRODUCT_KIND_ATTRIBUTE,
@@ -593,8 +574,7 @@ RestartStateIdentityResult RestartIO::read_restart_with_identity(
     if (stored_dynamics_identity
         != restart_dynamics_sha256(
             config_,
-            verified_snapshot_ic_sha256,
-            *encoding)) {
+            verified_snapshot_ic_sha256)) {
         throw std::runtime_error("Restart dynamics identity mismatch");
     }
 

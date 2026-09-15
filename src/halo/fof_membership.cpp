@@ -355,22 +355,16 @@ std::vector<FoFMembership> FoFMembershipFinder::find_memberships(
                                 const std::size_t other_index =
                                     static_cast<std::size_t>(other);
                                 if (other_index > particle) {
-                                    const core::Real dx = math::minimum_image(
-                                        math::wrap(
-                                            position_x[other_index], box_size)
-                                            - x,
+                                    const core::Real dx = math::minimum_image_distance_wrapped(
+                                        x, math::wrap(position_x[other_index], box_size),
                                         box_size);
                                     if (std::abs(dx) <= plan.linking_length) {
-                                        const core::Real dy = math::minimum_image(
-                                            math::wrap(
-                                                position_y[other_index], box_size)
-                                                - y,
+                                        const core::Real dy = math::minimum_image_distance_wrapped(
+                                            y, math::wrap(position_y[other_index], box_size),
                                             box_size);
                                         if (std::abs(dy) <= plan.linking_length) {
-                                            const core::Real dz = math::minimum_image(
-                                                math::wrap(
-                                                    position_z[other_index], box_size)
-                                                    - z,
+                                            const core::Real dz = math::minimum_image_distance_wrapped(
+                                                z, math::wrap(position_z[other_index], box_size),
                                                 box_size);
                                             if (std::abs(dz) <= plan.linking_length
                                                 && core::scale_safe_norm3_leq(

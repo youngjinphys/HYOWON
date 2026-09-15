@@ -16,12 +16,18 @@ struct RealisedICSummary {
     core::Real displacement_max_Mpc_h{0.0};
     core::Real momentum_rms{0.0};
     core::Real momentum_max{0.0};
-    // Nearest-neighbour cell-edge determinant at lattice vertices; not a
-    // continuous LPT Jacobian or shell-crossing criterion.
-    bool forward_jacobian_available{false};
-    core::Real forward_jacobian_determinant_min{0.0};
-    core::Real forward_jacobian_determinant_max{0.0};
-    std::size_t forward_jacobian_nonpositive_count{0};
+
+    // Finite forward-neighbour cell-edge orientation diagnostic. This is a
+    // discrete lattice observable, not det(I + dPsi/dq), a global injectivity
+    // test, or a shell-crossing criterion. `evaluated_count` and
+    // `unevaluable_count` are kept separately so one ambiguous periodic edge
+    // cannot erase valid observations made elsewhere.
+    bool forward_cell_edge_determinant_requested{false};
+    std::size_t forward_cell_edge_determinant_evaluated_count{0};
+    std::size_t forward_cell_edge_determinant_unevaluable_count{0};
+    core::Real forward_cell_edge_determinant_min{0.0};
+    core::Real forward_cell_edge_determinant_max{0.0};
+    std::size_t forward_cell_edge_determinant_nonpositive_count{0};
 };
 
 RealisedICSummary validate_realised_lattice_ic(

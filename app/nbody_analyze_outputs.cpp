@@ -431,8 +431,7 @@ void write_bispectrum_csv(
         source_snapshot,
         source_native_snapshot_object_sha256,
         snapshot_a);
-    output << "# table_schema_version=2\n"
-           << "# shell_index_base=0\n"
+    output << "# shell_index_base=0\n"
            << "# analysis_mesh=" << analysis_mesh << '\n'
            << "# configured_mesh=" << analysis_mesh << '\n'
            << "# estimator=equilateral_log_shell_fft_indicator_contraction\n"

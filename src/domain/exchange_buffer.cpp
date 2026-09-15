@@ -37,13 +37,6 @@ void ExchangeBuffer::sort_routed_in_place(
     sort_route_records(routed);
 }
 
-std::vector<RoutedExchangeParticle> ExchangeBuffer::sort_routed(
-    std::span<const RoutedExchangeParticle> routed) {
-    std::vector<RoutedExchangeParticle> sorted(routed.begin(), routed.end());
-    sort_routed_in_place(sorted);
-    return sorted;
-}
-
 void ExchangeBuffer::sort_routed_ghosts_in_place(
     std::span<RoutedGhostExchangeParticle> routed) {
     sort_route_records(routed);

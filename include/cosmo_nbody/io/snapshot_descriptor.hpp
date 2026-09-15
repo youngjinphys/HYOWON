@@ -23,7 +23,8 @@ struct SnapshotGenerationProvenance {
     bool available{false};
     std::uint64_t seed{0};
     std::uint64_t ic_mesh_per_dimension{0};
-    // Fourier support may be independently unknown in older metadata.
+    // Fourier support may be unavailable in descriptive provenance that is not
+    // admissible as a generated-IC source for evolution.
     std::optional<std::uint64_t> ic_max_mode_per_axis;
     std::optional<std::uint64_t> ic_effective_max_mode_per_axis;
     int lpt_order{0};

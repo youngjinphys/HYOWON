@@ -15,16 +15,17 @@ set(
     CACHE PATH
     "Optional coherent FFTW installation prefix for headers, base/threads libraries, and FFTW-MPI")
 
-project(HYOWON VERSION 0.0.2 LANGUAGES CXX C)
+project(HYOWON VERSION 0.0.3 LANGUAGES CXX C)
 set(HYOWON_RELEASE_STAGE "Beta")
 
-# Record configure-time source provenance without rejecting dirty/unbound trees.
+# Record configure-time source provenance for --version without making Git a
+# build requirement. Source archives therefore remain buildable and report
+# "unbound" when Git metadata is absent.
 set(HYOWON_SOURCE_COMMIT "unbound")
 set(HYOWON_SOURCE_TREE "unbound")
 set(HYOWON_SOURCE_STATE "unbound")
 find_package(Git QUIET)
 if(GIT_FOUND AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.git")
-    # Prevent child Git commands from inheriting a caller repository/index.
     execute_process(
         COMMAND "${GIT_EXECUTABLE}" rev-parse --local-env-vars
         RESULT_VARIABLE HYOWON_GIT_ENV_RESULT
@@ -40,8 +41,8 @@ if(GIT_FOUND AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.git")
                 list(APPEND HYOWON_SOURCE_GIT_COMMAND "--unset=${HYOWON_GIT_ENV_NAME}")
             endif()
         endforeach()
-        # Resolve immutable object IDs without local replacement references.
-        list(APPEND HYOWON_SOURCE_GIT_COMMAND "GIT_OPTIONAL_LOCKS=0"
+        list(APPEND HYOWON_SOURCE_GIT_COMMAND
+            "GIT_OPTIONAL_LOCKS=0"
             "GIT_NO_REPLACE_OBJECTS=1"
             "${GIT_EXECUTABLE}" -C "${CMAKE_CURRENT_SOURCE_DIR}")
         execute_process(
@@ -52,7 +53,6 @@ if(GIT_FOUND AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.git")
             OUTPUT_STRIP_TRAILING_WHITESPACE)
         get_filename_component(HYOWON_SOURCE_ROOT_REAL "${CMAKE_CURRENT_SOURCE_DIR}" REALPATH)
         get_filename_component(HYOWON_GIT_ROOT_REAL "${HYOWON_GIT_ROOT}" REALPATH)
-        # Do not borrow the identity of an enclosing repository.
         if(HYOWON_GIT_ROOT_RESULT STREQUAL "0"
            AND HYOWON_GIT_ROOT_REAL STREQUAL HYOWON_SOURCE_ROOT_REAL)
             execute_process(
@@ -63,7 +63,6 @@ if(GIT_FOUND AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.git")
                 OUTPUT_STRIP_TRAILING_WHITESPACE)
             if(HYOWON_GIT_COMMIT_RESULT STREQUAL "0"
                AND HYOWON_GIT_COMMIT_OUTPUT MATCHES "^[0-9a-fA-F]+$")
-                # Resolve the tree from the captured commit, not mutable HEAD.
                 execute_process(
                     COMMAND ${HYOWON_SOURCE_GIT_COMMAND} rev-parse --verify "${HYOWON_GIT_COMMIT_OUTPUT}^{tree}"
                     RESULT_VARIABLE HYOWON_GIT_TREE_RESULT
@@ -88,17 +87,6 @@ if(GIT_FOUND AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.git")
                             set(HYOWON_SOURCE_STATE "dirty")
                         endif()
                     endif()
-                    execute_process(
-                        COMMAND ${HYOWON_SOURCE_GIT_COMMAND} rev-parse --verify "HEAD^{commit}"
-                        RESULT_VARIABLE HYOWON_GIT_FINAL_RESULT
-                        OUTPUT_VARIABLE HYOWON_GIT_FINAL_COMMIT
-                        ERROR_QUIET
-                        OUTPUT_STRIP_TRAILING_WHITESPACE)
-                    if(NOT HYOWON_GIT_FINAL_RESULT STREQUAL "0")
-                        set(HYOWON_SOURCE_STATE "status_unavailable")
-                    elseif(NOT HYOWON_GIT_FINAL_COMMIT STREQUAL HYOWON_GIT_COMMIT_OUTPUT)
-                        set(HYOWON_SOURCE_STATE "changed_during_configure")
-                    endif()
                 endif()
             endif()
         endif()
@@ -109,7 +97,6 @@ message(STATUS "HYOWON source tree at configure: ${HYOWON_SOURCE_TREE}")
 message(STATUS "HYOWON source state at configure: ${HYOWON_SOURCE_STATE}")
 
 if(HYOWON_ENABLE_OPENMP)
-    # Apple Clang may need explicit libomp discovery.
     include("${CMAKE_CURRENT_LIST_DIR}/cmake/apple_openmp.cmake")
     hyowon_prepare_apple_openmp_hints()
 
@@ -129,19 +116,27 @@ endif()
 
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/project.cmake")
 
-option(HYOWON_BUILD_TESTS "Build focused numerical and runtime regression tests" OFF)
-if(HYOWON_BUILD_TESTS)
-    enable_testing()
-    add_subdirectory(tests)
+# Numerical reducers and exact-boundary predicates depend on ordinary IEEE-754
+# evaluation order. Keep this as a numerical contract, not a release-operation
+# check, and propagate it to all HYOWON C++ targets through hyowon_core.
+target_compile_options(hyowon_core PUBLIC
+    $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:GNU,Clang,AppleClang>>:-fno-fast-math;-fno-unsafe-math-optimizations;-fno-associative-math;-fno-finite-math-only;-ffp-contract=off>
+)
+
+# MPI startup must agree configuration and runtime intent before the simulator
+# constructs rank-local runtime state. Serial builds retain the direct entry.
+if(HYOWON_ENABLE_MPI)
+    set_source_files_properties(app/hyowon.cpp PROPERTIES
+        COMPILE_DEFINITIONS "main=hyowon_program_main")
+    target_sources(hyowon PRIVATE app/hyowon_entry.cpp)
 endif()
 
 set(CPACK_SOURCE_GENERATOR "TGZ;ZIP")
 set(CPACK_SOURCE_PACKAGE_FILE_NAME "HYOWON-v${PROJECT_VERSION}")
 set(CPACK_SOURCE_IGNORE_FILES
-    "/\\.git/" "/build[^/]*/" "/Build/" "/cmake-build[^/]*/"
+    "/\\.git($|/)" "/build[^/]*/" "/Build/" "/cmake-build[^/]*/"
     "/run/" "/runs/" "/dist/" "/\\.venv/" "/__pycache__/"
-    "/\\.codex/" "/\\.agents/" "/\\.claude/"
-    "/docs/" "/\\.github/"
+    "/tests/" "/docs/" "/reports/" "/\\.github/"
     "\\.py$" "\\.pyc$" "\\.log$" "\\.tmp$" "\\.hdf5$" "\\.h5$" "\\.DS_Store$")
 set(CPACK_VERBATIM_VARIABLES YES)
 include(CPack)

@@ -116,6 +116,55 @@ struct FourierAccumulator {
     std::size_t modes{0};
 };
 
+std::string_view forward_cell_edge_status(const RealisedICSummary& structural) {
+    if (!structural.forward_cell_edge_determinant_requested) {
+        return "not_requested";
+    }
+    if (structural.forward_cell_edge_determinant_evaluated_count == 0U) {
+        return "unavailable";
+    }
+    if (structural.forward_cell_edge_determinant_unevaluable_count == 0U) {
+        return "complete";
+    }
+    return "partial";
+}
+
+void validate_forward_cell_edge_summary(const RealisedICSummary& structural) {
+    const std::size_t evaluated =
+        structural.forward_cell_edge_determinant_evaluated_count;
+    const std::size_t unevaluable =
+        structural.forward_cell_edge_determinant_unevaluable_count;
+    const std::size_t nonpositive =
+        structural.forward_cell_edge_determinant_nonpositive_count;
+
+    if (!structural.forward_cell_edge_determinant_requested) {
+        if (evaluated != 0U || unevaluable != 0U || nonpositive != 0U) {
+            throw std::runtime_error(
+                "Realised IC cell-edge summary contains results although the diagnostic was not requested");
+        }
+        return;
+    }
+    if (evaluated > structural.particle_count
+        || unevaluable != structural.particle_count - evaluated
+        || nonpositive > evaluated) {
+        throw std::runtime_error(
+            "Realised IC cell-edge summary population accounting is inconsistent");
+    }
+    if (evaluated != 0U) {
+        require_finite(
+            structural.forward_cell_edge_determinant_min,
+            "minimum forward cell-edge determinant");
+        require_finite(
+            structural.forward_cell_edge_determinant_max,
+            "maximum forward cell-edge determinant");
+        if (structural.forward_cell_edge_determinant_min
+            > structural.forward_cell_edge_determinant_max) {
+            throw std::runtime_error(
+                "Realised IC cell-edge determinant extrema are inconsistent");
+        }
+    }
+}
+
 } // namespace
 
 ExactFourierEvidence summarize_generated_fourier_realisation(
@@ -366,21 +415,7 @@ RealisedICEvidence build_realised_ic_evidence(
     require_finite(structural.displacement_max_Mpc_h, "displacement maximum");
     require_finite(structural.momentum_rms, "momentum RMS");
     require_finite(structural.momentum_max, "momentum maximum");
-    if (structural.forward_jacobian_available) {
-        require_finite(
-            structural.forward_jacobian_determinant_min,
-            "minimum forward Jacobian determinant");
-        require_finite(
-            structural.forward_jacobian_determinant_max,
-            "maximum forward Jacobian determinant");
-        if (structural.forward_jacobian_determinant_min
-                > structural.forward_jacobian_determinant_max
-            || structural.forward_jacobian_nonpositive_count
-                > structural.particle_count) {
-            throw std::runtime_error(
-                "Realised IC forward Jacobian summary is inconsistent");
-        }
-    }
+    validate_forward_cell_edge_summary(structural);
     if (evidence.power_normalization.available) {
         require_finite(
             evidence.power_normalization.declared_sigma8_z0,
@@ -402,6 +437,12 @@ RealisedICEvidence build_realised_ic_evidence(
 }
 
 std::string RealisedICEvidence::to_json() const {
+    validate_forward_cell_edge_summary(structural);
+    const std::string_view cell_edge_status =
+        forward_cell_edge_status(structural);
+    const bool have_cell_edge_extrema =
+        structural.forward_cell_edge_determinant_evaluated_count != 0U;
+
     std::ostringstream out;
     out << std::setprecision(17)
         << "{\n"
@@ -436,15 +477,31 @@ std::string RealisedICEvidence::to_json() const {
         << structural.displacement_max_Mpc_h << ",\n"
         << "    \"momentum_rms\": " << structural.momentum_rms << ",\n"
         << "    \"momentum_max\": " << structural.momentum_max << ",\n"
-        << "    \"forward_jacobian_available\": "
-        << (structural.forward_jacobian_available ? "true" : "false")
+        << "    \"forward_cell_edge_determinant_requested\": "
+        << (structural.forward_cell_edge_determinant_requested ? "true" : "false")
         << ",\n"
-        << "    \"forward_jacobian_determinant_min\": "
-        << structural.forward_jacobian_determinant_min << ",\n"
-        << "    \"forward_jacobian_determinant_max\": "
-        << structural.forward_jacobian_determinant_max << ",\n"
-        << "    \"forward_jacobian_nonpositive_count\": "
-        << structural.forward_jacobian_nonpositive_count << "\n"
+        << "    \"forward_cell_edge_determinant_status\": \""
+        << cell_edge_status << "\",\n"
+        << "    \"forward_cell_edge_determinant_evaluated_count\": "
+        << structural.forward_cell_edge_determinant_evaluated_count << ",\n"
+        << "    \"forward_cell_edge_determinant_unevaluable_count\": "
+        << structural.forward_cell_edge_determinant_unevaluable_count << ",\n"
+        << "    \"forward_cell_edge_determinant_min\": ";
+    if (have_cell_edge_extrema) {
+        out << structural.forward_cell_edge_determinant_min;
+    } else {
+        out << "null";
+    }
+    out << ",\n"
+        << "    \"forward_cell_edge_determinant_max\": ";
+    if (have_cell_edge_extrema) {
+        out << structural.forward_cell_edge_determinant_max;
+    } else {
+        out << "null";
+    }
+    out << ",\n"
+        << "    \"forward_cell_edge_determinant_nonpositive_count\": "
+        << structural.forward_cell_edge_determinant_nonpositive_count << "\n"
         << "  },\n"
         << "  \"power_normalization\": {\n"
         << "    \"available\": "

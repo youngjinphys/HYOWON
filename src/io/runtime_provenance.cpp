@@ -350,11 +350,11 @@ ExecutionProvenance collect_execution_provenance(
     result.mpi_library_version = collect_rank_ordered_string_identity(
         context.mpi_library_version(),
         context,
-        "HYOWON.execution_provenance.mpi_library_version.v1");
+        "HYOWON.execution_provenance.mpi_library_version");
     result.processor_partition = collect_rank_partition_identity(
         context.processor_name(),
         context,
-        "HYOWON.execution_provenance.processor_partition.v1");
+        "HYOWON.execution_provenance.processor_partition");
     return result;
 }
 

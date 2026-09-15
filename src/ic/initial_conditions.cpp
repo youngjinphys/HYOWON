@@ -445,14 +445,21 @@ void InitialConditions::generate(
               << realised.displacement_max_Mpc_h
               << " Mpc/h, momentum_rms=" << realised.momentum_rms
               << ", momentum_max=" << realised.momentum_max;
-    if (realised.forward_jacobian_available) {
+    if (realised.forward_cell_edge_determinant_requested) {
         std::cout
-            << ", forward_jacobian_determinant_min="
-            << realised.forward_jacobian_determinant_min
-            << ", forward_jacobian_determinant_max="
-            << realised.forward_jacobian_determinant_max
-            << ", forward_jacobian_nonpositive_count="
-            << realised.forward_jacobian_nonpositive_count;
+            << ", forward_cell_edge_determinant_evaluated_count="
+            << realised.forward_cell_edge_determinant_evaluated_count
+            << ", forward_cell_edge_determinant_unevaluable_count="
+            << realised.forward_cell_edge_determinant_unevaluable_count
+            << ", forward_cell_edge_determinant_nonpositive_count="
+            << realised.forward_cell_edge_determinant_nonpositive_count;
+        if (realised.forward_cell_edge_determinant_evaluated_count != 0U) {
+            std::cout
+                << ", forward_cell_edge_determinant_min="
+                << realised.forward_cell_edge_determinant_min
+                << ", forward_cell_edge_determinant_max="
+                << realised.forward_cell_edge_determinant_max;
+        }
     }
     std::cout << ".\n";
 }

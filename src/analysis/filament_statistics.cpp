@@ -163,8 +163,9 @@ TidalWebField FilamentStatistics::build_tidal_web_field(
                         n_mesh % 2 == 0 && ix == n_mesh / 2,
                         n_mesh % 2 == 0 && iy == n_mesh / 2,
                         n_mesh % 2 == 0 && iz == n_mesh / 2};
-                    const Real kernel_value = mesh::real_fourier_hessian_numerator(
-                        axis_a, axis_b, components, nyquist) / k2;
+                    const Real kernel_value =
+                        mesh::real_fourier_hessian_numerator(
+                            axis_a, axis_b, components, nyquist) / k2;
                     if (!std::isfinite(kernel_value)) {
                         spectral_failure[ix] = std::uint8_t{1};
                         modes[index] = {0.0, 0.0};

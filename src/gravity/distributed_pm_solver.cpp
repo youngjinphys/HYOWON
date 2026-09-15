@@ -17,6 +17,7 @@
 #include <cmath>
 #include <complex>
 #include <cstdint>
+#include <cstdlib>
 #include <exception>
 #include <limits>
 #include <memory>
@@ -270,66 +271,14 @@ void synchronize_failure(
     int mpi_size,
     int local_failed,
     const char* context) {
-    if (mpi_size == 1) {
-        if (local_failed != 0) {
-            throw std::runtime_error(context);
-        }
-        return;
-    }
-#ifndef COSMO_NBODY_HAS_MPI
-    (void)local_failed;
-    throw std::runtime_error(
-        "Distributed PM failure synchronization requires MPI");
-#else
-    int any_failed = 0;
-    if (MPI_Allreduce(
-            &local_failed,
-            &any_failed,
-            1,
-            MPI_INT,
-            MPI_MAX,
-            MPI_COMM_WORLD) != MPI_SUCCESS) {
-        throw std::runtime_error(
-            std::string("MPI_Allreduce failed for ") + context);
-    }
-    if (any_failed != 0) {
-        throw std::runtime_error(context);
-    }
-#endif
+    runtime::synchronize_mpi_failure(local_failed, mpi_size, context);
 }
 
 void synchronize_exception(
     int mpi_size,
     std::exception_ptr local_exception,
     const char* context) {
-    if (mpi_size == 1) {
-        if (local_exception) std::rethrow_exception(local_exception);
-        return;
-    }
-#ifndef COSMO_NBODY_HAS_MPI
-    (void)local_exception;
-    (void)context;
-    throw std::runtime_error(
-        "Distributed PM exception synchronization requires MPI");
-#else
-    const int local_failed = local_exception ? 1 : 0;
-    int any_failed = 0;
-    if (MPI_Allreduce(
-            &local_failed,
-            &any_failed,
-            1,
-            MPI_INT,
-            MPI_MAX,
-            MPI_COMM_WORLD) != MPI_SUCCESS) {
-        throw std::runtime_error(
-            std::string("MPI_Allreduce failed for ") + context);
-    }
-    if (any_failed != 0) {
-        if (local_exception) std::rethrow_exception(local_exception);
-        throw std::runtime_error(
-            std::string(context) + " failed on another rank");
-    }
-#endif
+    runtime::synchronize_mpi_exception(local_exception, mpi_size, context);
 }
 
 long double rank_order_sum(
@@ -356,16 +305,13 @@ long double rank_order_sum(
     synchronize_exception(
         mpi_size, allocation_exception,
         "Distributed PM diagnostic rank-sum allocation");
-    if (MPI_Allgather(
-            &local_value,
-            1,
-            MPI_LONG_DOUBLE,
-            rank_values.data(),
-            1,
-            MPI_LONG_DOUBLE,
-            MPI_COMM_WORLD) != MPI_SUCCESS) {
-        throw std::runtime_error(
-            std::string("MPI_Allgather failed for ") + context);
+    const int status = MPI_Allgather(
+        &local_value, 1, MPI_LONG_DOUBLE,
+        rank_values.data(), 1, MPI_LONG_DOUBLE,
+        MPI_COMM_WORLD);
+    if (status != MPI_SUCCESS) {
+        (void)MPI_Abort(MPI_COMM_WORLD, status);
+        std::abort();
     }
     long double sum = 0.0L;
     long double compensation = 0.0L;
@@ -642,28 +588,36 @@ void DistributedPMSolver::interpolate_force_field(
     std::span<const core::Real> pos_y,
     std::span<const core::Real> pos_z,
     std::span<core::Real> acceleration) {
-    std::exception_ptr local_exception;
+    // Agree all rank-local preparation before any peer enters plane exchange.
+    std::exception_ptr preparation_exception;
     try {
         if (real_force_.size() != geometry_.real_size()) {
             throw std::logic_error(
                 "Distributed spectral force workspace is not allocated");
         }
-        if (size_ == 1) {
-            mass_assignment_.interpolate_add(
-                real_force_, nullptr,
-                pos_x, pos_y, pos_z, acceleration);
-        } else {
-            exchange_field_planes(real_force_);
-            mass_assignment_.interpolate_add(
-                real_force_,
-                &recv_right_plane_,
-                pos_x, pos_y, pos_z, acceleration);
+        if (pos_x.size() != pos_y.size() || pos_x.size() != pos_z.size()
+            || pos_x.size() != acceleration.size()) {
+            throw std::invalid_argument(
+                "Distributed PM force interpolation component sizes differ");
         }
     } catch (...) {
-        local_exception = std::current_exception();
+        preparation_exception = std::current_exception();
     }
     synchronize_exception(
-        size_, local_exception, "Distributed PM force interpolation");
+        size_, preparation_exception, "Distributed PM force interpolation preparation");
+
+    if (size_ > 1) exchange_field_planes(real_force_);
+
+    std::exception_ptr interpolation_exception;
+    try {
+        mass_assignment_.interpolate_add(
+            real_force_, size_ == 1 ? nullptr : &recv_right_plane_,
+            pos_x, pos_y, pos_z, acceleration);
+    } catch (...) {
+        interpolation_exception = std::current_exception();
+    }
+    synchronize_exception(
+        size_, interpolation_exception, "Distributed PM force interpolation");
 
     int local_invalid = 0;
     for (const core::Real value : acceleration) {
@@ -943,67 +897,81 @@ core::Real DistributedPMSolver::compute_cic_self_energy_comoving(
     std::span<const core::Real> pos_z,
     std::span<const core::Real> masses,
     std::optional<core::Real> uniform_mass) const {
-    if (!self_kernel_ready_) {
-        throw std::logic_error(
-            "Distributed PM self-energy kernel is not initialized");
-    }
-    if (pos_x.size() != pos_y.size() || pos_x.size() != pos_z.size()) {
-        throw std::invalid_argument(
-            "Distributed PM self-energy position component sizes differ");
-    }
-    if (!uniform_mass.has_value() && masses.size() != pos_x.size()) {
-        throw std::invalid_argument(
-            "Distributed PM self-energy mass count differs from particle count");
-    }
-    const core::Real dx =
-        box_size_ / static_cast<core::Real>(mesh_size_);
-    if (!std::isfinite(dx) || dx <= 0.0) {
-        throw std::overflow_error(
-            "Distributed PM self-energy cell size is not representable");
-    }
+    core::Accum local_sum = 0.0;
+    std::exception_ptr local_exception;
+    try {
+        if (!self_kernel_ready_) {
+            throw std::logic_error(
+                "Distributed PM self-energy kernel is not initialized");
+        }
+        if (pos_x.size() != pos_y.size() || pos_x.size() != pos_z.size()) {
+            throw std::invalid_argument(
+                "Distributed PM self-energy position component sizes differ");
+        }
+        if (!uniform_mass.has_value() && masses.size() != pos_x.size()) {
+            throw std::invalid_argument(
+                "Distributed PM self-energy mass count differs from particle count");
+        }
+        if (uniform_mass.has_value()
+            && (!std::isfinite(*uniform_mass) || *uniform_mass <= 0.0)) {
+            throw std::invalid_argument(
+                "Distributed PM self-energy uniform mass must be finite and positive");
+        }
+        const core::Real dx =
+            box_size_ / static_cast<core::Real>(mesh_size_);
+        if (!std::isfinite(dx) || dx <= 0.0) {
+            throw std::overflow_error(
+                "Distributed PM self-energy cell size is not representable");
+        }
 
-    const core::Accum local_sum = math::deterministic_blocked_sum(
-        pos_x.size(),
-        [&](std::size_t index) -> core::Accum {
-            const core::Real mass = uniform_mass.has_value()
-                ? *uniform_mass : masses[index];
-            if (!std::isfinite(mass) || mass <= 0.0) {
-                return std::numeric_limits<core::Accum>::quiet_NaN();
-            }
-            std::array<std::array<core::Real, 3>, 3> lag_factor{};
-            const std::array<core::Real, 3> coordinates{
-                pos_x[index], pos_y[index], pos_z[index]};
-            for (std::size_t dim = 0; dim < 3; ++dim) {
-                if (!std::isfinite(coordinates[dim])) {
+        local_sum = math::deterministic_blocked_sum(
+            pos_x.size(),
+            [&](std::size_t index) -> core::Accum {
+                const core::Real mass = uniform_mass.has_value()
+                    ? *uniform_mass : masses[index];
+                if (!std::isfinite(mass) || mass <= 0.0) {
                     return std::numeric_limits<core::Accum>::quiet_NaN();
                 }
-                const core::Real cell_coordinate =
-                    math::wrap(coordinates[dim], box_size_) / dx;
-                const core::Real offset =
-                    cell_coordinate - std::floor(cell_coordinate);
-                const core::Real lower = 1.0 - offset;
-                lag_factor[dim] = {
-                    offset * lower,
-                    lower * lower + offset * offset,
-                    offset * lower};
-            }
-            core::Accum stencil{0.0};
-            for (std::size_t lag_x = 0; lag_x < 3; ++lag_x) {
-                for (std::size_t lag_y = 0; lag_y < 3; ++lag_y) {
-                    for (std::size_t lag_z = 0; lag_z < 3; ++lag_z) {
-                        stencil += static_cast<core::Accum>(
-                            lag_factor[0][lag_x]
-                            * lag_factor[1][lag_y]
-                            * lag_factor[2][lag_z]
-                            * self_kernel_[
-                                lag_x * 9 + lag_y * 3 + lag_z]);
+                std::array<std::array<core::Real, 3>, 3> lag_factor{};
+                const std::array<core::Real, 3> coordinates{
+                    pos_x[index], pos_y[index], pos_z[index]};
+                for (std::size_t dim = 0; dim < 3; ++dim) {
+                    if (!std::isfinite(coordinates[dim])) {
+                        return std::numeric_limits<core::Accum>::quiet_NaN();
+                    }
+                    const core::Real cell_coordinate =
+                        math::wrap(coordinates[dim], box_size_) / dx;
+                    const core::Real offset =
+                        cell_coordinate - std::floor(cell_coordinate);
+                    const core::Real lower = 1.0 - offset;
+                    lag_factor[dim] = {
+                        offset * lower,
+                        lower * lower + offset * offset,
+                        offset * lower};
+                }
+                core::Accum stencil{0.0};
+                for (std::size_t lag_x = 0; lag_x < 3; ++lag_x) {
+                    for (std::size_t lag_y = 0; lag_y < 3; ++lag_y) {
+                        for (std::size_t lag_z = 0; lag_z < 3; ++lag_z) {
+                            stencil += static_cast<core::Accum>(
+                                lag_factor[0][lag_x]
+                                * lag_factor[1][lag_y]
+                                * lag_factor[2][lag_z]
+                                * self_kernel_[
+                                    lag_x * 9 + lag_y * 3 + lag_z]);
+                        }
                     }
                 }
-            }
-            return self_kernel_scaled_by_cell_volume_
-                ? scaled_mass_space_self_energy_term(mass, stencil, dx)
-                : scaled_self_energy_term(mass, stencil);
-        });
+                return self_kernel_scaled_by_cell_volume_
+                    ? scaled_mass_space_self_energy_term(mass, stencil, dx)
+                    : scaled_self_energy_term(mass, stencil);
+            });
+    } catch (...) {
+        local_exception = std::current_exception();
+    }
+    // Block allocation and exact-sum fallback can throw before rank_order_sum.
+    synchronize_exception(
+        size_, local_exception, "Distributed PM self-energy local reduction");
     const long double global_sum = rank_order_sum(
         static_cast<long double>(local_sum),
         size_,

@@ -174,7 +174,7 @@
     // without weakening the configured upper bound.
     constexpr std::uint64_t mpi_batch_limit =
         static_cast<std::uint64_t>(std::numeric_limits<int>::max() / 3);
-    const std::uint64_t transfer_batch = std::min(
+    std::uint64_t transfer_batch = std::min(
         configured_batch, mpi_batch_limit);
 
     const std::uint64_t local_count =
@@ -263,6 +263,18 @@
         throw std::runtime_error(
             "Distributed snapshot rank intervals do not cover the global particle range");
     }
+
+    // A configured batch is an upper bound. No source rank can provide more than
+    // the largest rank payload, so capping the effective batch here cannot add a
+    // transfer split that was not already required by some source payload. It also
+    // gives transport staging and post-write verification one shared memory bound.
+    const std::uint64_t maximum_rank_count =
+        *std::max_element(rank_counts.begin(), rank_counts.end());
+    if (maximum_rank_count == 0) {
+        throw std::logic_error(
+            "Distributed snapshot has a non-positive maximum rank payload");
+    }
+    transfer_batch = std::min(transfer_batch, maximum_rank_count);
 
     const auto owned_ids = local_particles.get_ids().first(local_owned);
     domain::require_globally_unique_sorted_particle_ids(owned_ids);

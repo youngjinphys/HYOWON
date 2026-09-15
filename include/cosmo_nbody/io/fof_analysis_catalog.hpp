@@ -12,41 +12,10 @@
 #include <optional>
 #include <span>
 #include <string>
-#include <vector>
 
 namespace cosmo_nbody::io {
 
-struct FoFMembershipCatalogGroup {
-    std::size_t id{0};
-    std::vector<core::ParticleId> member_ids;
-};
-
-struct FoFMembershipCatalog {
-    ProductLineage lineage{ProductLineage::Unknown};
-    std::string lineage_string;
-    core::Real linking_length_b{0.0};
-    std::size_t min_particles{0};
-    core::Real scale_factor{0.0};
-    std::string run_metadata_json;
-    std::vector<FoFMembershipCatalogGroup> groups;
-};
-
-struct HaloDerivedPropertyCatalog {
-    ProductLineage lineage{ProductLineage::Unknown};
-    std::string lineage_string;
-    std::string membership_group_path;
-    std::string mass_definition;
-    core::Real scale_factor{0.0};
-    std::string run_metadata_json;
-    std::vector<analysis::HaloDerivedProperties> halos;
-};
-
-struct FoFAnalysisCatalog {
-    FoFMembershipCatalog memberships;
-    HaloDerivedPropertyCatalog properties;
-};
-
-// Immutable context required to persist or validate a derived FoF catalog.
+// Immutable context required to persist a derived FoF catalog.
 // Snapshot analysis supplies these facts directly from its descriptor and
 // observed execution metadata.
 struct FoFAnalysisCatalogContext {
@@ -75,10 +44,6 @@ public:
         std::size_t min_particles,
         core::Real scale_factor,
         ProductLineage lineage) const;
-
-    // Read both required groups, validate their semantic attributes, and reject
-    // cross-group disagreement.
-    FoFAnalysisCatalog read(const std::string& filename) const;
 
 private:
     // Private serialization step: validates before rename; write_durable owns

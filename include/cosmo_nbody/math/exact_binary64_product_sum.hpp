@@ -77,14 +77,18 @@ struct DecodedBinary64 {
 };
 
 inline DecodedBinary64 decode_binary64(double value) {
-    if (!std::isfinite(value)) {
-        throw std::invalid_argument(
-            "Exact binary64 product sum requires finite factors");
-    }
+    // Inspect the IEEE-754 object representation directly. This validation must
+    // remain correct even when a caller supplies aggressive floating-point
+    // compiler flags that allow ordinary floating predicates to assume finite
+    // operands.
     std::uint64_t bits = 0;
     std::memcpy(&bits, &value, sizeof(bits));
     const bool negative = (bits >> 63U) != 0U;
     const std::uint64_t exponent_bits = (bits >> 52U) & 0x7ffU;
+    if (exponent_bits == 0x7ffU) {
+        throw std::invalid_argument(
+            "Exact binary64 product sum requires finite factors");
+    }
     const std::uint64_t fraction =
         bits & ((std::uint64_t{1} << 52U) - 1U);
     if (exponent_bits == 0U) {
@@ -252,7 +256,11 @@ inline double rounded_binary64(
 
     const long long value_exponent =
         static_cast<long long>(highest) + base_exponent;
-    double result = 0.0;
+    // Finish in the same integer domain as the exact accumulator. ldexp() and
+    // floating predicates depend on rounding/FTZ modes and compiler finite-math
+    // assumptions: they can flush a valid subnormal or hide an overflow after
+    // the exact integer calculation has already succeeded.
+    std::uint64_t bits = negative ? (std::uint64_t{1} << 63U) : 0U;
     if (value_exponent < -1022) {
         constexpr std::size_t subnormal_shift =
             static_cast<std::size_t>(-1074 - base_exponent);
@@ -262,7 +270,8 @@ inline double rounded_binary64(
             throw std::underflow_error(
                 "Exact binary64 product sum is nonzero but not representable");
         }
-        result = std::ldexp(static_cast<double>(units), -1074);
+        // units <= 2^52; the upper endpoint is the smallest normal value.
+        bits |= units;
     } else {
         std::size_t shift = highest > 52U ? highest - 52U : 0U;
         std::uint64_t significand = rounded_shifted_integer(
@@ -271,21 +280,23 @@ inline double rounded_binary64(
             significand >>= 1U;
             ++shift;
         }
-        result = std::ldexp(
-            static_cast<double>(significand),
-            base_exponent + static_cast<int>(shift));
-        if (!std::isfinite(result)) {
+        const long long rounded_exponent =
+            base_exponent + static_cast<long long>(shift) + 52;
+        if (rounded_exponent > 1023) {
             throw std::overflow_error(
                 "Exact binary64 product sum is not representable");
         }
+        bits |= static_cast<std::uint64_t>(rounded_exponent + 1023) << 52U;
+        bits |= significand & ((std::uint64_t{1} << 52U) - 1U);
     }
-    return negative ? -result : result;
+    return std::bit_cast<double>(bits);
 }
 
 } // namespace exact_binary64_product_sum_detail
 
 // Sum a small fixed set of products as the exact mathematical values of their
-// binary64 factors, then round once to binary64. This is intended for rare
+// binary64 factors, then round once to nearest, ties-to-even binary64,
+// independently of the floating rounding and denormal modes. This is for rare
 // cancellation fallbacks, not as a general high-throughput reduction.
 inline double exact_binary64_product_sum(
     std::span<const ExactBinary64ProductTerm> terms) {
@@ -310,8 +321,12 @@ inline double exact_binary64_product_sum(
             product_negative ^= decoded.negative;
             if (decoded.significand == 0U) {
                 product_zero = true;
-                break;
+                continue;
             }
+            // Once any factor is exactly zero the mathematical product is zero,
+            // but every remaining factor must still be decoded so NaN/Inf can
+            // never be hidden by factor ordering.
+            if (product_zero) continue;
             exponent += decoded.exponent;
             multiply_product(product, decoded.significand);
         }

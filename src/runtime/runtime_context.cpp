@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <exception>
 #include <fstream>
 #include <limits>
 #include <memory>
@@ -379,7 +380,10 @@ struct RuntimeContext::State {
             shared_unbound_cpu_affinity =
                 locality.affinity.shared_unbound_affinity;
 
-            std::exception_ptr local_setup_exception;
+            // Local policy rejection or allocation failure must be agreed
+            // before any rank returns or begins MPI lifecycle cleanup. The
+            // locality collectives above are already complete at this boundary.
+            std::exception_ptr local_startup_error;
             try {
                 host_threads.emplace(
                     params.num_threads,
@@ -407,11 +411,10 @@ struct RuntimeContext::State {
                         static_cast<std::size_t>(library_length));
                 }
             } catch (...) {
-                local_setup_exception = std::current_exception();
+                local_startup_error = std::current_exception();
             }
-            // Agree before any rank returns or tears down its MPI runtime.
             synchronize_mpi_exception(
-                local_setup_exception, size, "MPI local runtime setup");
+                local_startup_error, size, "MPI runtime startup");
             mpi_active = true;
         } catch (...) {
             host_threads.reset();

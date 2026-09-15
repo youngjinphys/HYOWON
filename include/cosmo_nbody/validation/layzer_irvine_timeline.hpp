@@ -1,5 +1,7 @@
 #pragma once
 
+#include "cosmo_nbody/validation/force_energy_work.hpp"
+
 #include <cstdint>
 #include <filesystem>
 #include <optional>
@@ -7,6 +9,14 @@
 #include <string>
 
 namespace cosmo_nbody::validation {
+
+struct ForceEnergyWorkIntervalRecord {
+    ForceEnergyWorkPoint start{};
+    ForceEnergyWorkPoint end{};
+    double integrated_work{0.0};
+    double integrated_work_compensation{0.0};
+    double closure_residual{0.0};
+};
 
 struct LayzerIrvineSampleRecord {
     std::uint64_t step{0};
@@ -25,6 +35,7 @@ struct LayzerIrvineSampleRecord {
     double residual{0.0};
     std::optional<double> ratio;
     bool reused_force_potential{false};
+    std::optional<ForceEnergyWorkIntervalRecord> force_energy_work;
 };
 
 std::string layzer_irvine_timeline_to_json(

@@ -232,7 +232,10 @@ core::Real collectively_checked_real(
     } catch (...) {
         local_exception = std::current_exception();
     }
-    synchronize_exception(local_exception, mpi_enabled, quantity);
+    synchronize_exception(
+        local_exception,
+        mpi_enabled,
+        quantity);
     return result;
 }
 
@@ -1562,9 +1565,9 @@ core::Real ConservationChecks::update_layzer_irvine_state(
             },
             {1.0L, -1.0L, 1.0L, -half_interval, -half_interval},
             "Layzer-Irvine source compensation");
-    const core::Real residual = checked_scaled_linear_combination<3>(
-        {energy, state.initial_E, updated},
-        {1.0L, -1.0L, 1.0L},
+    const core::Real residual = checked_scaled_linear_combination<4>(
+        {energy, state.initial_E, updated, updated_compensation},
+        {1.0L, -1.0L, 1.0L, -1.0L},
         "Layzer-Irvine residual");
 
     ConservationState candidate = state;

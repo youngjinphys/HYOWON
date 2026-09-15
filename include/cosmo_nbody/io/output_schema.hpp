@@ -34,7 +34,7 @@ inline constexpr std::string_view VAL_SOFTWARE_NAME =
     native_identity::SOFTWARE_NAME;
 inline const std::string ATTR_SNAPSHOT_SCHEMA{artifact_schema::SNAPSHOT_ATTRIBUTE};
 inline constexpr std::string_view VAL_SNAPSHOT_SCHEMA =
-    artifact_schema::CURRENT_SNAPSHOT.identity;
+    artifact_schema::SNAPSHOT;
 
 // Header Attributes
 inline const std::string ATTR_NUM_PART_THIS_FILE = "NumPart_ThisFile";

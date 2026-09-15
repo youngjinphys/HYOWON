@@ -251,6 +251,12 @@ void append_common_suffix(std::ostream& out, const RunMetadata& meta) {
     append_json_bool(out, "runtime_mpi_enabled", meta.runtime_mpi_enabled);
     append_json_string(
         out, "runtime_ic_scratch_mode", meta.runtime_ic_scratch_mode);
+    if (meta.runtime_evolution_scratch_mode.has_value()) {
+        append_json_string(out, "runtime_evolution_scratch_mode",
+                           *meta.runtime_evolution_scratch_mode);
+    } else {
+        append_json_null(out, "runtime_evolution_scratch_mode");
+    }
     append_json_string(
         out, "runtime_scratch_directory", meta.runtime_scratch_directory);
     append_fftw_planning_record_array(out, meta.fftw_planning_records);
@@ -358,6 +364,7 @@ void append_snapshot_derived_analysis_json(
     append_json_bool(out, "runtime_mpi_enabled", meta.runtime_mpi_enabled);
     append_json_string(
         out, "runtime_ic_scratch_mode", meta.runtime_ic_scratch_mode);
+    append_json_null(out, "runtime_evolution_scratch_mode");
     append_json_string(
         out, "runtime_scratch_directory", meta.runtime_scratch_directory);
     append_fftw_planning_record_array(out, meta.fftw_planning_records);
@@ -399,6 +406,7 @@ void append_snapshot_derived_analysis_json(
             "timestamped_run_directory",
             "snapshot_batch_particles",
             "validation_write_diagnostics",
+            "runtime_evolution_scratch_mode",
     };
     if (meta.power_spectrum_fidelity.empty()) {
         unavailable_fields.push_back("power_spectrum_fidelity");
@@ -645,6 +653,7 @@ void require_config_metadata_source_within_bound(
     add_source_string(output.run_label);
     add_source_string(memory_policy.scratch_directory);
     add_source_string(config::scratch_mode_name(memory_policy.ic_scratch_mode));
+    add_source_string(config::scratch_mode_name(memory_policy.evolution_scratch_mode));
     add_source_string("restart_checkpoint_manifest");
     add_source_string("inherited_via_input_snapshot_run_metadata");
     add_source_string("refer_to_input_snapshot_run_metadata");
@@ -771,6 +780,9 @@ std::uint64_t run_metadata_dynamic_payload_bytes(
     add_string(metadata.output_root_directory);
     add_string(metadata.output_run_label);
     add_string(metadata.runtime_ic_scratch_mode);
+    if (metadata.runtime_evolution_scratch_mode.has_value()) {
+        add_string(*metadata.runtime_evolution_scratch_mode);
+    }
     add_string(metadata.runtime_scratch_directory);
     add_fftw_planning_record_storage(
         bytes,
@@ -971,6 +983,8 @@ RunMetadata RunMetadata::from_config(
     const auto& memory_policy = config.get_memory_policy();
     meta.runtime_ic_scratch_mode = std::string(
         config::scratch_mode_name(memory_policy.ic_scratch_mode));
+    meta.runtime_evolution_scratch_mode = std::string(
+        config::scratch_mode_name(memory_policy.evolution_scratch_mode));
     meta.runtime_scratch_directory = memory_policy.scratch_directory;
     meta.fftw_planning_records = std::move(fftw_planning_records);
     meta.fftw_planning_records_complete = planning_records_complete;

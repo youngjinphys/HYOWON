@@ -14,8 +14,7 @@ namespace time {
 class LeapfrogIntegrator {
 public:
     // Callback scale factor matches the particle state; the integrator validates
-    // the returned acceleration. Collective callbacks must synchronize internal
-    // failures before advancing to their next collective.
+    // the returned acceleration.
     using ForceSolverFunc = std::function<void(
         std::span<const core::Real>,
         std::span<const core::Real>,
@@ -37,8 +36,6 @@ public:
 
     // Reuse a VALID force only at exactly the requested epoch; callers that
     // mutate positions outside step() must invalidate acceleration themselves.
-    // With collective_size > 1, all ranks must call with the same epoch and
-    // agree on force-cache validity, including invalidation after external edits.
     void ensure_force_at(core::Real scale_factor);
 
     // Maximum ||D p_mid|| from the last completed drift; telemetry only, not an

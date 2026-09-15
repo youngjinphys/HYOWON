@@ -29,7 +29,7 @@ namespace cosmo_nbody::io {
 namespace {
 
 constexpr const char* kManifestFilename = "checkpoint.meta";
-constexpr const char* kManifestHeader = "hyowon_restart_checkpoint_v1";
+constexpr const char* kManifestHeader = "hyowon.restart.checkpoint";
 
 struct CheckpointShardRecord {
     int rank{0};

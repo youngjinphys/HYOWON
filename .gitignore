@@ -36,7 +36,7 @@ install_manifest.txt
 compile_commands.json
 CMakeUserPresets.json
 
-# Temporary/editor/agent files
+# Temporary and editor files
 *.tmp
 *.log
 *.bak
@@ -46,9 +46,6 @@ CMakeUserPresets.json
 *.rej
 *.patch
 .DS_Store
-.agents/
-.codex/
-.claude/
 .venv/
 __pycache__/
 *.pyc

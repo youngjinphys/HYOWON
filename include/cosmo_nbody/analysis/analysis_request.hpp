@@ -60,6 +60,8 @@ struct AnalysisRequest {
     bool peak_saddle_merge_ratio_explicit{false};
     bool write_standard_so{false};
 
+    // User-facing HMF bounds are physical masses in M_sun/h. The halo-analysis
+    // boundary converts them once to HYOWON's native 1e10 M_sun/h mass unit.
     std::optional<core::Real> hmf_min_mass;
     std::optional<core::Real> hmf_max_mass;
     int hmf_bins{0};

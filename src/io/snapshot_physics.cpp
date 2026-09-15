@@ -161,7 +161,7 @@ std::string snapshot_physics_fingerprint(
             append_uint(
                 "snapshot_target_count",
                 static_cast<std::uint64_t>(output.snapshot_scale_factors.size()));
-            append_string("snapshot_target_encoding", "indexed_key_v1");
+            append_string("snapshot_target_encoding", "indexed_key");
             for (std::size_t index = 0;
                  index < output.snapshot_scale_factors.size();
                  ++index) {

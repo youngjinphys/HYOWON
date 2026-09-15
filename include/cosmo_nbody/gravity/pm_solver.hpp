@@ -34,6 +34,17 @@ struct PMForceDiagnostics {
     std::optional<core::Real> cic_self_energy_comoving;
 };
 
+// Measurement from the real-space pure-PM potential produced by the immediately
+// preceding force refresh. Directional quantities use caller-supplied endpoint
+// canonical momenta and are derivatives of the reported CIC particle-position
+// energies, not derivatives of the centered-grid gathered force operator.
+struct PMPostForceEnergyDiagnostics {
+    core::Real potential_energy_comoving{0.0};
+    core::Real directional_potential_energy_comoving{0.0};
+    std::optional<core::Real> cic_self_energy_comoving;
+    std::optional<core::Real> directional_cic_self_energy_comoving;
+};
+
 class PMSolver {
 public:
     // PMForceMethod binds the Green function, gradient, split, and CIC choices.
@@ -81,6 +92,19 @@ private:
         std::span<core::Real> force_z,
         bool collect_potential_energy,
         mesh::CICDepositWorkspace* deposition_workspace = nullptr);
+
+    // Consume the current pure-PM real-space potential immediately after its
+    // force refresh. This path performs scalar reductions only and does not
+    // materialize a particle-sized energy-gradient vector.
+    PMPostForceEnergyDiagnostics measure_post_force_energy_diagnostics_in_place(
+        std::span<const core::Real> pos_x,
+        std::span<const core::Real> pos_y,
+        std::span<const core::Real> pos_z,
+        std::span<const core::Real> masses,
+        std::optional<core::Real> uniform_mass,
+        std::span<const core::Real> momentum_x,
+        std::span<const core::Real> momentum_y,
+        std::span<const core::Real> momentum_z);
 
     int mpi_force_stage_size(const char* context) const;
     void synchronize_mpi_force_stage(

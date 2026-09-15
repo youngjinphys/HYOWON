@@ -13,8 +13,12 @@ namespace units {
     constexpr core::Real Mpc_in_m = 3.085677581491367e22;
     constexpr core::Real Msun_in_kg = 1.98847e30;
 
+    // One internal mass unit is 1e10 M_sun/h. Keep the user-facing physical
+    // scale explicit so analysis boundaries do not silently reinterpret masses.
+    constexpr core::Real MassUnit_in_Msun_per_h = 1e10;
+
     // SI realization of the internal base units; h factors cancel.
-    constexpr core::Real MassUnit_in_kg = 1e10 * Msun_in_kg;
+    constexpr core::Real MassUnit_in_kg = MassUnit_in_Msun_per_h * Msun_in_kg;
     constexpr core::Real LengthUnit_in_m = Mpc_in_m;
     constexpr core::Real VelocityUnit_in_m_s = 1000.0;
 

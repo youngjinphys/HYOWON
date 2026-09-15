@@ -371,9 +371,12 @@ bool record_distance(
     const BinLayout& layout,
     std::vector<std::size_t>& bins,
     std::size_t& total) {
-    const core::Real dx = math::minimum_image(first.x - second.x, box_size);
-    const core::Real dy = math::minimum_image(first.y - second.y, box_size);
-    const core::Real dz = math::minimum_image(first.z - second.z, box_size);
+    const core::Real dx = math::minimum_image_distance_wrapped(
+        first.x, second.x, box_size);
+    const core::Real dy = math::minimum_image_distance_wrapped(
+        first.y, second.y, box_size);
+    const core::Real dz = math::minimum_image_distance_wrapped(
+        first.z, second.z, box_size);
     const core::Real distance = core::scale_safe_norm3(dx, dy, dz);
     const std::size_t bin = layout.locate(distance);
     if (bin == invalid_bin) return true;
@@ -418,43 +421,6 @@ PairCounts count_auto(
         label);
 }
 
-PairCounts count_cross(
-    std::span<const core::Vec3> data,
-    std::span<const core::Vec3> random_points,
-    core::Real box_size,
-    const BinLayout& layout,
-    const CellGrid& data_grid,
-    const CellGrid& random_grid) {
-    if (data_grid.cells_per_dimension != random_grid.cells_per_dimension
-        || data_grid.neighbor_reach != random_grid.neighbor_reach) {
-        throw std::logic_error(
-            "TwoPointCorrelation data/random cell grids are inconsistent");
-    }
-    return parallel_count(
-        data.size(),
-        layout.midpoints.size(),
-        [&](std::size_t first,
-            std::vector<std::size_t>& bins,
-            std::size_t& total) {
-            const std::size_t cell = data_grid.point_cell_ids[first];
-            const auto neighbor_it = data_grid.neighbor_cells.find(cell);
-            if (neighbor_it == data_grid.neighbor_cells.end()) return false;
-            for (const std::size_t neighbor : neighbor_it->second) {
-                const auto occupied_it = random_grid.occupied.find(neighbor);
-                if (occupied_it == random_grid.occupied.end()) continue;
-                for (const std::size_t second : occupied_it->second) {
-                    if (!record_distance(
-                            data[first], random_points[second], box_size,
-                            layout, bins, total)) {
-                        return false;
-                    }
-                }
-            }
-            return true;
-        },
-        "DR");
-}
-
 core::Real normalized(std::size_t count, long double denominator) {
     if (!std::isfinite(denominator) || denominator <= 0.0L) {
         throw std::overflow_error("TwoPointCorrelation normalization is invalid");
@@ -493,77 +459,6 @@ core::Real periodic_shell_probability(
 }
 
 } // namespace
-
-TwoPointResult TwoPointCorrelation::compute(
-    std::span<const core::Vec3> points,
-    std::span<const core::Vec3> random_points,
-    core::Real box_size,
-    const TwoPointOptions& options) {
-    validate_options(box_size, options);
-    const auto data = wrapped_points(points, box_size, "data");
-    const auto random = wrapped_points(random_points, box_size, "random");
-    if (data.size() < 2) {
-        throw std::invalid_argument(
-            "TwoPointCorrelation data catalog requires at least two selected points");
-    }
-    if (random.size() < 2) {
-        throw std::invalid_argument(
-            "TwoPointCorrelation explicit random catalog requires at least two points");
-    }
-
-    const BinLayout layout = make_layout(options);
-    const CellGrid data_grid = build_cell_grid(
-        data, box_size, options.max_radius);
-    const CellGrid random_grid = build_cell_grid(
-        random, box_size, options.max_radius);
-    const PairCounts dd = count_auto(
-        data, box_size, layout, data_grid, "DD");
-    const PairCounts dr = count_cross(
-        data, random, box_size, layout, data_grid, random_grid);
-    const PairCounts rr = count_auto(
-        random, box_size, layout, random_grid, "RR");
-
-    const long double nd = static_cast<long double>(data.size());
-    const long double nr = static_cast<long double>(random.size());
-    const long double dd_denominator = nd * (nd - 1.0L) / 2.0L;
-    const long double dr_denominator = nd * nr;
-    const long double rr_denominator = nr * (nr - 1.0L) / 2.0L;
-
-    TwoPointResult result;
-    result.box_size = box_size;
-    result.input_point_count = points.size();
-    result.used_point_count = data.size();
-    result.random_point_count = random.size();
-    result.data_data_pair_count_in_range = dd.in_range;
-    result.data_random_pair_count_in_range = dr.in_range;
-    result.random_random_pair_count_in_range = rr.in_range;
-    result.pair_count_in_range = dd.in_range;
-    result.random_catalog = "caller_supplied";
-    result.tracer_label = options.tracer_label;
-    result.binning = options.binning;
-    result.estimator = "landy_szalay_explicit_random";
-    result.reference_measure = "caller_supplied_selection_window";
-    result.bins.resize(layout.midpoints.size());
-
-    for (std::size_t index = 0; index < result.bins.size(); ++index) {
-        auto& bin = result.bins[index];
-        bin.radius_low = layout.edges[index];
-        bin.radius_high = layout.edges[index + 1];
-        bin.radius_midpoint = layout.midpoints[index];
-        bin.data_data_pair_count = dd.bins[index];
-        bin.data_random_pair_count = dr.bins[index];
-        bin.random_random_pair_count = rr.bins[index];
-        bin.data_data_normalized = normalized(dd.bins[index], dd_denominator);
-        bin.data_random_normalized = normalized(dr.bins[index], dr_denominator);
-        bin.random_random_normalized = normalized(rr.bins[index], rr_denominator);
-        bin.xi = bin.random_random_normalized > 0.0
-            ? (bin.data_data_normalized - 2.0 * bin.data_random_normalized
-                + bin.random_random_normalized)
-                / bin.random_random_normalized
-            : std::numeric_limits<core::Real>::quiet_NaN();
-    }
-    return result;
-}
 
 TwoPointResult TwoPointCorrelation::compute(
     std::span<const core::Vec3> points,

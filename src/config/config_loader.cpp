@@ -653,7 +653,12 @@ SimulationParameters build_parameters(
         require_regular_input_file(
             i.power_spectrum_file, "ic.power_spectrum_file");
     } else if (i.mode == "snapshot") {
-        require_regular_input_file(i.snapshot_file, "ic.snapshot_file");
+        // The serial reader or distributed rank-0 reader admits the exact file.
+        // Config loading precedes MPI initialization; peers need not have the
+        // snapshot in their local filesystem. Keep syntax checks here only.
+        if (i.snapshot_file.empty()) {
+            throw std::invalid_argument("ic.snapshot_file must not be empty");
+        }
     }
 
     if (auto output = tbl["output"].as_table()) {

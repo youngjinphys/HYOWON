@@ -124,6 +124,23 @@ public:
         std::optional<core::Real> uniform_mass,
         core::Accum scale = core::Accum{1.0}) const;
 
+    // Differentiate the CIC-gathered scalar field with respect to particle
+    // position and contract it with a caller-supplied particle direction. The
+    // result is sum_i m_i direction_i . grad S_i[field], without a particle-sized
+    // gradient buffer. On an exact CIC cell boundary the selected-cell one-sided
+    // derivative is used; callers must preserve that interpretation in diagnostics.
+    core::Accum interpolate_mass_weighted_directional_derivative(
+        const RealField& field,
+        const RealField* right_ghost,
+        std::span<const core::Real> pos_x,
+        std::span<const core::Real> pos_y,
+        std::span<const core::Real> pos_z,
+        std::span<const core::Real> masses,
+        std::optional<core::Real> uniform_mass,
+        std::span<const core::Real> direction_x,
+        std::span<const core::Real> direction_y,
+        std::span<const core::Real> direction_z) const;
+
     // Full-mesh counterpart returning sum(m_i f_i) with team-size-independent
     // blocked reduction order.
     core::Accum interpolate_mass_weighted_sum_full_mesh(

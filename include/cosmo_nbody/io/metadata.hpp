@@ -120,6 +120,10 @@ struct RunMetadata {
     bool runtime_mpi_enabled{false};
 
     std::string runtime_ic_scratch_mode;
+    // Requested evolution placement is independent of IC placement. Null for
+    // snapshot-derived analysis, which must not invent upstream runtime policy.
+    // This records configuration, not measured per-buffer backing or RSS.
+    std::optional<std::string> runtime_evolution_scratch_mode;
     std::string runtime_scratch_directory;
 
     // Process-order FFTW planning records are serialized only inside RunMetadataJson.

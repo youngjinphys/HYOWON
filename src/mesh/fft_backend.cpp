@@ -1,3 +1,4 @@
+// FFTW3 backend implementation with optional threaded plan execution.
 #include "cosmo_nbody/mesh/fft_backend.hpp"
 #include "cosmo_nbody/mesh/fftw_runtime.hpp"
 #include "cosmo_nbody/io/content_hash.hpp"
@@ -62,7 +63,7 @@ namespace {
 constexpr std::size_t MAXIMUM_FFTW_WISDOM_BYTES = 16U * 1024U * 1024U;
 constexpr std::size_t MAXIMUM_FFTW_PLAN_TEXT_BYTES = 16U * 1024U * 1024U;
 constexpr std::string_view SERIAL_PLANNER_SCHEMA =
-    "serial_fftw_r2c_c2r_3d_out_of_place_aligned_and_unaligned_v2";
+    "serial_fftw_r2c_c2r_3d_out_of_place_aligned_and_unaligned";
 constexpr std::string_view SERIAL_PLANNER_FLAGS =
     "aligned=FFTW_MEASURE;unaligned=FFTW_MEASURE|FFTW_UNALIGNED";
 
@@ -783,7 +784,8 @@ FFTBackend::FFTBackend(
         dummy_complex = static_cast<fftw_complex*>(complex_backing->data());
         // Start trivial scalar lifetimes without touching every mapped page.
         std::uninitialized_default_construct_n(dummy_real, real_size_);
-        std::uninitialized_default_construct_n(dummy_complex, complex_size_);
+        // Placement array new starts double[2] lifetimes on older libc++.
+        ::new (static_cast<void*>(dummy_complex)) fftw_complex[complex_size_];
     } else {
         anonymous_real.reset(fftw_alloc_real(real_size_));
         anonymous_complex.reset(fftw_alloc_complex(complex_size_));
@@ -846,7 +848,7 @@ FFTBackend::FFTBackend(
         const std::string cache_identity_sha256 =
             io::sha256_text(cache_identity);
         wisdom_path = *wisdom_directory
-            / ("fftw_wisdom_v2_"
+            / ("fftw_wisdom_"
                + cache_identity_sha256 + "_"
                + std::to_string(N_) + "_"
                + std::to_string(fftw_thread_count) + ".bin");

@@ -25,6 +25,13 @@ struct DistributedPMForceDiagnostics {
     core::Real cic_self_energy_comoving{0.0};
 };
 
+struct DistributedPMPostForceEnergyDiagnostics {
+    core::Real potential_energy_comoving{0.0};
+    core::Real directional_potential_energy_comoving{0.0};
+    core::Real cic_self_energy_comoving{0.0};
+    core::Real directional_cic_self_energy_comoving{0.0};
+};
+
 // Internal MPI backend; PMSolver alone resolves the named PMForceMethod and may
 // construct this class, preventing unsupported lower-level operator hybrids.
 class DistributedPMSolver {
@@ -119,12 +126,31 @@ private:
         std::span<const core::Real> pos_z,
         std::span<const core::Real> masses,
         std::optional<core::Real> uniform_mass) const;
+    core::Real compute_cic_self_energy_momentum_directional_comoving(
+        std::span<const core::Real> pos_x,
+        std::span<const core::Real> pos_y,
+        std::span<const core::Real> pos_z,
+        std::span<const core::Real> masses,
+        std::optional<core::Real> uniform_mass,
+        std::span<const core::Real> momentum_x,
+        std::span<const core::Real> momentum_y,
+        std::span<const core::Real> momentum_z) const;
     DistributedPMForceDiagnostics collect_force_diagnostics(
         std::span<const core::Real> pos_x,
         std::span<const core::Real> pos_y,
         std::span<const core::Real> pos_z,
         std::span<const core::Real> masses,
         std::optional<core::Real> uniform_mass);
+    DistributedPMPostForceEnergyDiagnostics
+    measure_post_force_energy_diagnostics(
+        std::span<const core::Real> pos_x,
+        std::span<const core::Real> pos_y,
+        std::span<const core::Real> pos_z,
+        std::span<const core::Real> masses,
+        std::optional<core::Real> uniform_mass,
+        std::span<const core::Real> momentum_x,
+        std::span<const core::Real> momentum_y,
+        std::span<const core::Real> momentum_z);
 };
 
 } // namespace gravity

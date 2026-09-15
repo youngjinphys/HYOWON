@@ -29,6 +29,7 @@ public:
     EvolutionPMSolverHandle& operator=(
         std::unique_ptr<gravity::PMSolver> solver) noexcept {
         deposition_workspace_.release();
+        post_force_energy_available_ = false;
         solver_ = std::move(solver);
         return *this;
     }
@@ -54,7 +55,8 @@ public:
             throw std::logic_error(
                 "EvolutionPMSolverHandle has no configured PM solver");
         }
-        return solver_->compute_forces_in_place(
+        post_force_energy_available_ = false;
+        auto diagnostics = solver_->compute_forces_in_place(
             pos_x,
             pos_y,
             pos_z,
@@ -65,6 +67,34 @@ public:
             acc_z,
             collect_potential_energy,
             &deposition_workspace_);
+        // collect_potential_energy may consume/overwrite the current real-space
+        // potential on a distributed backend. Only the no-collection path can be
+        // followed by the single-use endpoint energy-gradient measurement.
+        post_force_energy_available_ = !collect_potential_energy;
+        return diagnostics;
+    }
+
+    gravity::PMPostForceEnergyDiagnostics measure_post_force_energy_diagnostics(
+        std::span<const core::Real> pos_x,
+        std::span<const core::Real> pos_y,
+        std::span<const core::Real> pos_z,
+        std::span<const core::Real> masses,
+        std::optional<core::Real> uniform_mass,
+        std::span<const core::Real> momentum_x,
+        std::span<const core::Real> momentum_y,
+        std::span<const core::Real> momentum_z) {
+        if (!solver_) {
+            throw std::logic_error(
+                "EvolutionPMSolverHandle has no configured PM solver");
+        }
+        if (!post_force_energy_available_) {
+            throw std::logic_error(
+                "PM post-force energy diagnostic requires an unconsumed preceding force refresh");
+        }
+        post_force_energy_available_ = false;
+        return solver_->measure_post_force_energy_diagnostics_in_place(
+            pos_x, pos_y, pos_z, masses, uniform_mass,
+            momentum_x, momentum_y, momentum_z);
     }
 
     void release_transient_deposition_workspace() noexcept {
@@ -74,6 +104,7 @@ public:
 private:
     std::unique_ptr<gravity::PMSolver> solver_;
     mesh::CICDepositWorkspace deposition_workspace_;
+    bool post_force_energy_available_{false};
 };
 
 } // namespace cosmo_nbody::runtime

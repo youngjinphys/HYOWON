@@ -163,10 +163,6 @@ std::string read_required_string(
         "Snapshot descriptor");
 }
 
-// The HYOWON v1 writer emits one compact RunMetadataJson top-level object with
-// 17-digit real serialization. FFTW planning provenance is the sole nested
-// value: an array of flat objects. This bounded parser fails closed on duplicate
-// keys, malformed JSON tokens, unsupported nesting, or missing required fields.
 bool is_json_number_token(std::string_view token) noexcept;
 
 bool is_hexadecimal_digit(unsigned char character) noexcept {
@@ -401,8 +397,7 @@ void scan_canonical_array(
 
 std::string_view canonical_run_metadata_value(
     std::string_view json,
-    std::string_view key,
-    bool required = true) {
+    std::string_view key) {
     if (json.size() < 2 || json.front() != '{' || json.back() != '}') {
         throw std::runtime_error(
             "Snapshot RunMetadataJson is not a compact top-level object");
@@ -507,7 +502,7 @@ std::string_view canonical_run_metadata_value(
                 "Snapshot RunMetadataJson has a trailing comma");
         }
     }
-    if (!found && required) {
+    if (!found) {
         throw std::runtime_error(
             "Snapshot RunMetadataJson is missing required provenance field: "
             + std::string(key));
@@ -647,12 +642,11 @@ bool canonical_run_metadata_bool(
         + std::string(key));
 }
 
-std::optional<std::uint64_t> optional_run_metadata_uint64(
+std::optional<std::uint64_t> nullable_run_metadata_uint64(
     std::string_view json, std::string_view key) {
-    // Absence is allowed only after the entire object has passed the same
-    // canonical scanner as required fields, including duplicate-key checks.
-    const auto token = canonical_run_metadata_value(json, key, false);
-    if (token.empty() || token == "null") return std::nullopt;
+    // A null value is explicit provenance; an absent field is not current format.
+    const auto token = canonical_run_metadata_value(json, key);
+    if (token == "null") return std::nullopt;
     return canonical_run_metadata_uint64(json, key);
 }
 
@@ -811,16 +805,9 @@ SnapshotGenerationProvenance read_snapshot_generation_provenance(
         run_metadata_json, "ic_phase_pairing");
     provenance.ic_lattice_convention = canonical_run_metadata_string(
         run_metadata_json, "ic_lattice_convention");
-    const auto requested_support_token = canonical_run_metadata_value(
-        run_metadata_json, "ic_max_mode_per_axis", false);
-    const auto effective_support_token = canonical_run_metadata_value(
-        run_metadata_json, "ic_effective_max_mode_per_axis", false);
-    if (requested_support_token.empty() != effective_support_token.empty()) {
-        throw std::runtime_error("Snapshot IC support provenance is incomplete");
-    }
-    provenance.ic_max_mode_per_axis = optional_run_metadata_uint64(
+    provenance.ic_max_mode_per_axis = nullable_run_metadata_uint64(
         run_metadata_json, "ic_max_mode_per_axis");
-    provenance.ic_effective_max_mode_per_axis = optional_run_metadata_uint64(
+    provenance.ic_effective_max_mode_per_axis = nullable_run_metadata_uint64(
         run_metadata_json, "ic_effective_max_mode_per_axis");
 
     if (ic_mode == "generate") {
@@ -889,6 +876,10 @@ SnapshotGenerationProvenance read_snapshot_generation_provenance(
     }
     const auto requested = provenance.ic_max_mode_per_axis;
     const auto effective = provenance.ic_effective_max_mode_per_axis;
+    if (provenance.available && !effective) {
+        throw std::runtime_error(
+            "Snapshot verified generator provenance requires effective IC support");
+    }
     if (requested && (!effective || *requested != *effective)) {
         throw std::runtime_error("Snapshot requested and effective IC support disagree");
     }
@@ -920,12 +911,13 @@ void require_snapshot_initial_condition_match(
     // bytes; it does not certify the external Boltzmann calculation.
     const auto& origin = descriptor.generation_provenance;
     if (!origin.available
+        || !origin.ic_effective_max_mode_per_axis.has_value()
         || descriptor.power_spectrum_fidelity != "precision_boltzmann"
         || origin.power_spectrum_fidelity != "precision_boltzmann"
         || !is_canonical_sha256(origin.power_spectrum_sha256)) {
         throw std::runtime_error(
             "Snapshot IC requires retained precision_boltzmann generation "
-            "provenance and a canonical source power-spectrum SHA-256; "
+            "provenance, effective Fourier support, and a canonical source power-spectrum SHA-256; "
             "regenerate from documented input rather than relabelling a snapshot");
     }
     if (descriptor.particle_count != config.num_particles()

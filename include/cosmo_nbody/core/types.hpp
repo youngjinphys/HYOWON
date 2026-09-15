@@ -2,6 +2,16 @@
 // p=a^2 dx/dt; PeculiarVelocity stores a dx/dt=p/a in km/s; Acceleration stores g.
 #pragma once
 
+// HYOWON admission and numerical-invariant checks deliberately distinguish
+// finite values from NaN/Inf. GCC/Clang finite-math modes are allowed to assume
+// NaN/Inf never occur and can therefore optimize std::isfinite/isnan checks
+// into constants. Reject those compilation contracts instead of silently
+// weakening every runtime validation that depends on IEEE non-finite semantics.
+#if defined(__FAST_MATH__) \
+    || (defined(__FINITE_MATH_ONLY__) && __FINITE_MATH_ONLY__ > 0)
+#error "HYOWON requires IEEE NaN/Inf semantics; -ffast-math, -Ofast, and -ffinite-math-only are unsupported"
+#endif
+
 #include "cosmo_nbody/core/exact_binary64_norm.hpp"
 
 #include <cstdint>
