@@ -4,51 +4,21 @@
 #include "cosmo_nbody/math/periodic_box.hpp"
 #include "membership_validation.hpp"
 
+#include <boost/multiprecision/cpp_int.hpp>
+
 #include <algorithm>
+#include <bit>
+#include <cstdint>
 #include <cmath>
 #include <limits>
 #include <numbers>
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace cosmo_nbody::analysis {
 namespace {
-
-struct CompensatedSum {
-    long double sum{0.0L};
-    long double correction{0.0L};
-
-    void add(long double value) {
-        if (!std::isfinite(value)) {
-            throw std::overflow_error(
-                "Halo derived-property accumulation term is non-finite");
-        }
-        const long double updated = sum + value;
-        if (!std::isfinite(updated)) {
-            throw std::overflow_error(
-                "Halo derived-property accumulation overflowed");
-        }
-        const long double compensation = std::abs(sum) >= std::abs(value)
-            ? (sum - updated) + value
-            : (value - updated) + sum;
-        correction += compensation;
-        if (!std::isfinite(correction)) {
-            throw std::overflow_error(
-                "Halo derived-property compensation overflowed");
-        }
-        sum = updated;
-    }
-
-    long double value() const {
-        const long double result = sum + correction;
-        if (!std::isfinite(result)) {
-            throw std::overflow_error(
-                "Halo derived-property compensated sum is non-finite");
-        }
-        return result;
-    }
-};
 
 struct ScaledValue {
     long double mantissa{0.0L};
@@ -110,11 +80,9 @@ ScaledValue normalized_product_difference(
     const int rhs_exponent = rhs_a_exponent + rhs_b_exponent;
     const int common_exponent = std::max(lhs_exponent, rhs_exponent);
     const long double scaled_lhs_a = std::scalbn(
-        lhs_a_mantissa,
-        lhs_exponent - common_exponent);
+        lhs_a_mantissa, lhs_exponent - common_exponent);
     const long double scaled_rhs_a = std::scalbn(
-        rhs_a_mantissa,
-        rhs_exponent - common_exponent);
+        rhs_a_mantissa, rhs_exponent - common_exponent);
 
     // Recover the rounded second product's error with FMA, then add it to the
     // first fused product difference. This is the cancellation-preserving
@@ -452,74 +420,205 @@ core::Real representable_real(long double value, const char* label) {
     return rounded;
 }
 
-struct PeriodicCenterAccumulator {
-    CompensatedSum normalized_weight_sum;
-    CompensatedSum weighted_sin[3];
-    CompensatedSum weighted_cos[3];
+// Integer units avoid both cancellation in Q-2*c*S+c*c*W and rounded
+// comparisons between equal minima. Common powers of two are removed before
+// arithmetic, so ordinary equal-mass samples use small integers. No precision
+// cutoff or empirical ambiguity threshold is part of the center definition.
+using CenterInteger = boost::multiprecision::cpp_int;
 
-    void add(
-        const core::Vec3& position,
-        long double normalized_weight,
-        core::Real box_size) {
-        if (!std::isfinite(normalized_weight) || normalized_weight < 0.0L) {
+int binary64_integer_low_bit(core::Real value) {
+    const auto bits = std::bit_cast<std::uint64_t>(value);
+    const auto exponent = static_cast<int>((bits >> 52U) & 0x7ffU);
+    auto significand = bits & ((std::uint64_t{1} << 52U) - 1U);
+    if (exponent != 0) significand |= std::uint64_t{1} << 52U;
+    if (significand == 0) return std::numeric_limits<int>::max();
+    return (exponent == 0 ? 0 : exponent - 1)
+        + static_cast<int>(std::countr_zero(significand));
+}
+
+CenterInteger binary64_integer_units(core::Real value, int removed_bits) {
+    const auto bits = std::bit_cast<std::uint64_t>(value);
+    const auto exponent = static_cast<int>((bits >> 52U) & 0x7ffU);
+    auto significand = bits & ((std::uint64_t{1} << 52U) - 1U);
+    if (exponent != 0) significand |= std::uint64_t{1} << 52U;
+    CenterInteger result = significand;
+    const int shift = (exponent == 0 ? 0 : exponent - 1) - removed_bits;
+    if (shift >= 0) result <<= shift;
+    else result >>= -shift; // Only common, exactly zero low bits are removed.
+    return result;
+}
+
+// Round (numerator/denominator)*2^quantum to nearest binary64, ties to even.
+// Integer division supplies the exact remainder, including subnormal and zero
+// results. The final scalbn merely assembles an already representable value.
+core::Real round_center_rational(
+    const CenterInteger& numerator,
+    const CenterInteger& denominator,
+    int quantum) {
+    if (numerator == 0) return 0.0;
+    int ratio_exponent = static_cast<int>(boost::multiprecision::msb(numerator))
+        - static_cast<int>(boost::multiprecision::msb(denominator));
+    if (ratio_exponent >= 0) {
+        if (numerator < (denominator << ratio_exponent)) --ratio_exponent;
+    } else if ((numerator << -ratio_exponent) < denominator) {
+        --ratio_exponent;
+    }
+    const int spacing_exponent = std::max(ratio_exponent + quantum - 52, -1074);
+    CenterInteger scaled_numerator = numerator;
+    CenterInteger scaled_denominator = denominator;
+    const int shift = quantum - spacing_exponent;
+    if (shift >= 0) scaled_numerator <<= shift;
+    else scaled_denominator <<= -shift;
+    CenterInteger significand = scaled_numerator / scaled_denominator;
+    const CenterInteger remainder = scaled_numerator % scaled_denominator;
+    const CenterInteger twice_remainder = remainder << 1;
+    if (twice_remainder > scaled_denominator
+        || (twice_remainder == scaled_denominator
+            && static_cast<bool>(significand & 1))) {
+        ++significand;
+    }
+    const auto integer_significand = significand.convert_to<std::uint64_t>();
+    const core::Real result = std::scalbn(
+        static_cast<core::Real>(integer_significand), spacing_exponent);
+    if (!std::isfinite(result)) {
+        throw std::overflow_error("Halo periodic intrinsic mass center is not representable");
+    }
+    return result;
+}
+
+struct PeriodicIntrinsicCenterAccumulator {
+    struct Sample {
+        core::Vec3 position{};
+        core::Real weight{0.0};
+    };
+    struct Event {
+        CenterInteger breakpoint;
+        CenterInteger weight;
+        CenterInteger initial_lift;
+    };
+    std::vector<Sample> samples;
+
+    void add(const core::Vec3& position, core::Real weight, core::Real box_size) {
+        if (!std::isfinite(weight) || weight <= 0.0) {
             throw std::invalid_argument(
-                "Halo periodic-center normalized weight must be finite and non-negative");
+                "Halo periodic intrinsic center requires finite positive weights");
         }
-        if (normalized_weight == 0.0L) return;
-        normalized_weight_sum.add(normalized_weight);
-        const core::Real coordinates[3]{position.x, position.y, position.z};
-        for (int axis = 0; axis < 3; ++axis) {
-            const long double coordinate = static_cast<long double>(
-                math::wrap(coordinates[axis], box_size));
-            const long double angle = 2.0L * std::numbers::pi_v<long double>
-                * coordinate / static_cast<long double>(box_size);
-            weighted_sin[axis].add(normalized_weight * std::sin(angle));
-            weighted_cos[axis].add(normalized_weight * std::cos(angle));
+        const core::Vec3 wrapped = math::wrap(position, box_size);
+        if (!std::isfinite(wrapped.x) || !std::isfinite(wrapped.y)
+            || !std::isfinite(wrapped.z)) {
+            throw std::invalid_argument(
+                "Halo periodic intrinsic center requires finite wrapped positions");
         }
+        samples.push_back({wrapped, weight});
     }
 
-    core::Real axis(
-        int axis_index,
-        core::Real box_size) const {
-        if (axis_index < 0 || axis_index >= 3) {
+    core::Real axis(int axis_index, core::Real box_size) const {
+        if (axis_index < 0 || axis_index >= 3 || samples.empty()) {
             throw std::invalid_argument(
-                "Halo derived properties require a valid periodic-center accumulator");
+                "Halo periodic intrinsic center requires a populated valid axis");
         }
-        const long double total_weight = normalized_weight_sum.value();
-        if (!(total_weight > 0.0L)) {
+        if (!std::isfinite(box_size) || !(box_size > 0.0)) {
             throw std::invalid_argument(
-                "Halo periodic center requires a positive normalized weight sum");
+                "Halo periodic intrinsic center requires a finite positive box");
         }
-        const long double sine = weighted_sin[axis_index].value();
-        const long double cosine = weighted_cos[axis_index].value();
-        const long double resultant = std::hypot(sine, cosine) / total_weight;
-        const long double directional_resolution =
-            128.0L * static_cast<long double>(
-                std::numeric_limits<core::Real>::epsilon());
-        if (!std::isfinite(resultant)
-            || resultant <= directional_resolution) {
-            throw std::invalid_argument(
-                "Halo periodic center is not uniquely defined on this axis");
+        const auto coordinate_of = [axis_index](const Sample& sample) {
+            return axis_index == 0 ? sample.position.x
+                : axis_index == 1 ? sample.position.y : sample.position.z;
+        };
+        int weight_shift = std::numeric_limits<int>::max();
+        // Doubled coordinates start in 2^-1075 physical units. Keep at least
+        // one factor of two in the integer box so every antipode is integral.
+        int coordinate_shift = binary64_integer_low_bit(box_size);
+        for (const Sample& sample : samples) {
+            weight_shift = std::min(weight_shift, binary64_integer_low_bit(sample.weight));
+            const core::Real coordinate = coordinate_of(sample);
+            if (coordinate != 0.0) {
+                coordinate_shift = std::min(
+                    coordinate_shift, binary64_integer_low_bit(coordinate) + 1);
+            }
         }
+        const CenterInteger box = binary64_integer_units(box_size, coordinate_shift - 1);
+        const CenterInteger half_box = box >> 1;
+        CenterInteger total_weight = 0;
+        CenterInteger weighted_coordinate = 0;
+        CenterInteger weighted_square = 0;
+        std::vector<Event> events;
+        events.reserve(samples.size());
+        for (const Sample& sample : samples) {
+            CenterInteger weight = binary64_integer_units(sample.weight, weight_shift);
+            const CenterInteger coordinate = binary64_integer_units(
+                coordinate_of(sample), coordinate_shift - 1);
+            CenterInteger lift = coordinate;
+            if (coordinate > half_box) lift -= box;
+            total_weight += weight;
+            weighted_coordinate += weight * lift;
+            weighted_square += weight * lift * lift;
+            CenterInteger breakpoint = coordinate + half_box;
+            if (breakpoint >= box) breakpoint -= box;
+            // An antipode at zero already has the right-hand +half_box lift.
+            if (breakpoint != 0) {
+                events.push_back({std::move(breakpoint), std::move(weight), std::move(lift)});
+            }
+        }
+        std::sort(events.begin(), events.end(), [](const Event& lhs, const Event& rhs) {
+            return lhs.breakpoint < rhs.breakpoint;
+        });
 
-        long double angle_value = std::atan2(sine, cosine);
-        if (angle_value < 0.0L) {
-            angle_value += 2.0L * std::numbers::pi_v<long double>;
+        bool have_best = false;
+        bool non_unique = false;
+        CenterInteger best_objective;
+        CenterInteger best_numerator;
+        const auto consider_interval = [&](const CenterInteger& left, const CenterInteger& right) {
+            // At each antipode the derivative has a strictly negative jump;
+            // such a corner cannot be a local minimum. Every global minimum
+            // is therefore a stationary quadratic mean S/W in its interval.
+            // Closed endpoints also include the identical zero/box candidate.
+            if (weighted_coordinate < total_weight * left
+                || weighted_coordinate > total_weight * right) return;
+            CenterInteger objective = total_weight * weighted_square
+                - weighted_coordinate * weighted_coordinate;
+            if (objective < 0) {
+                throw std::logic_error("Exact intrinsic-center objective violated nonnegativity");
+            }
+            CenterInteger canonical_numerator = weighted_coordinate;
+            if (canonical_numerator == total_weight * box) canonical_numerator = 0;
+            if (!have_best || objective < best_objective) {
+                have_best = true;
+                non_unique = false;
+                best_objective = std::move(objective);
+                best_numerator = std::move(canonical_numerator);
+            } else if (objective == best_objective && canonical_numerator != best_numerator) {
+                non_unique = true;
+            }
+        };
+        CenterInteger interval_left = 0;
+        std::size_t event_index = 0;
+        while (event_index < events.size()) {
+            const CenterInteger& breakpoint = events[event_index].breakpoint;
+            consider_interval(interval_left, breakpoint);
+            std::size_t next_event = event_index;
+            do {
+                const Event& event = events[next_event];
+                weighted_coordinate += event.weight * box;
+                weighted_square += event.weight * box * (2 * event.initial_lift + box);
+                ++next_event;
+            } while (next_event < events.size() && events[next_event].breakpoint == breakpoint);
+            interval_left = breakpoint;
+            event_index = next_event;
         }
-        return math::wrap(
-            representable_real(
-                angle_value * static_cast<long double>(box_size)
-                    / (2.0L * std::numbers::pi_v<long double>),
-                "periodic center"),
-            box_size);
+        consider_interval(interval_left, box);
+        if (!have_best) {
+            throw std::logic_error("Halo periodic intrinsic-center scan produced no candidate");
+        }
+        if (non_unique) {
+            throw std::invalid_argument("Halo periodic intrinsic mass center is non-unique on this axis");
+        }
+        return math::wrap(round_center_rational(
+            best_numerator, total_weight, coordinate_shift - 1075), box_size);
     }
 
     core::Vec3 center(core::Real box_size) const {
-        return {
-            axis(0, box_size),
-            axis(1, box_size),
-            axis(2, box_size),
-        };
+        return {axis(0, box_size), axis(1, box_size), axis(2, box_size)};
     }
 };
 
@@ -576,7 +675,6 @@ HaloDerivedProperties compute_from_membership(
 
     math::ExactPositiveDoubleSum total_mass_accumulator;
     ScaledSignedSum weighted_momentum[3];
-    long double maximum_mass_wide = 0.0L;
     for (const std::size_t index : members) {
         const core::Real mass = particles.mass_at(index);
         if (!std::isfinite(mass) || mass <= 0.0) {
@@ -590,7 +688,6 @@ HaloDerivedProperties compute_from_membership(
         require_finite_vector(position, "Halo member position");
         require_finite_vector(momentum, "Halo member momentum");
         const long double wide_mass = static_cast<long double>(mass);
-        maximum_mass_wide = std::max(maximum_mass_wide, wide_mass);
         total_mass_accumulator.add(mass);
         weighted_momentum[0].add_product(
             wide_mass, static_cast<long double>(momentum.x));
@@ -601,8 +698,7 @@ HaloDerivedProperties compute_from_membership(
     }
 
     const core::Real total_mass = total_mass_accumulator.value();
-    if (!std::isfinite(total_mass) || total_mass <= 0.0
-        || !(maximum_mass_wide > 0.0L)) {
+    if (!std::isfinite(total_mass) || total_mass <= 0.0) {
         throw std::overflow_error(
             "Halo derived-property total mass is not finite and positive");
     }
@@ -622,19 +718,19 @@ HaloDerivedProperties compute_from_membership(
             mean_momentum_wide[2], scale_factor_wide,
             "Halo mean velocity z is not representable")};
 
-    // Circular means depend only on relative positive weights. Normalize by the
-    // largest member mass before multiplying by sin/cos so a common dimensional
-    // mass scale cannot push otherwise meaningful direction terms into
-    // underflow. A ratio that itself rounds to zero is too small to influence a
-    // center that passes the much coarser binary64 directional-resolution gate.
-    PeriodicCenterAccumulator periodic_center;
+    // The periodic mass center is the coordinate-wise intrinsic (Fréchet) mean
+    // on the cubic torus: it minimizes the mass-weighted sum of squared periodic
+    // geodesic distances. Each axis is piecewise quadratic between antipodes, so
+    // sorting those breakpoints gives the global minimum without an empirical
+    // resultant-length threshold or the chordal bias of the circular mean.
+    PeriodicIntrinsicCenterAccumulator periodic_center;
     for (const std::size_t index : members) {
-        const long double normalized_weight =
-            static_cast<long double>(particles.mass_at(index))
-            / maximum_mass_wide;
         const core::Vec3 position{
             positions_x[index], positions_y[index], positions_z[index]};
-        periodic_center.add(position, normalized_weight, box_size);
+        periodic_center.add(
+            position,
+            particles.mass_at(index),
+            box_size);
     }
 
     HaloDerivedProperties result;

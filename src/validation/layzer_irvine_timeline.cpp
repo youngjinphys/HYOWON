@@ -167,6 +167,13 @@ void validate_sample(const LayzerIrvineSampleRecord& sample) {
     }
 }
 
+void append_optional_ratio(
+    std::ostringstream& out,
+    const std::optional<double>& ratio) {
+    if (ratio.has_value()) out << *ratio;
+    else out << "null";
+}
+
 void append_work_point(
     std::ostringstream& out,
     const ForceEnergyWorkPoint& point) {
@@ -203,8 +210,7 @@ void append_sample(
         << sample.integrated_source_compensation
         << ", \"residual\": " << sample.residual
         << ", \"ratio\": ";
-    if (sample.ratio.has_value()) out << *sample.ratio;
-    else out << "null";
+    append_optional_ratio(out, sample.ratio);
     out << ", \"reused_force_potential\": "
         << (sample.reused_force_potential ? "true" : "false")
         << ", \"force_energy_work\": ";
@@ -212,6 +218,20 @@ void append_sample(
         out << "null";
     } else {
         const auto& work = *sample.force_energy_work;
+        const ForceEnergyWorkState work_state{
+            true, work.end,
+            work.integrated_work, work.integrated_work_compensation};
+        const double integrated_work_resolved =
+            force_energy_integrated_work(work_state);
+        const auto integrated_work_ratio = layzer_irvine_ratio(
+            integrated_work_resolved,
+            sample.kinetic_energy,
+            sample.potential_energy_pair);
+        const auto closure_ratio = layzer_irvine_ratio(
+            work.closure_residual,
+            sample.kinetic_energy,
+            sample.potential_energy_pair);
+
         out << "{\"start\": ";
         append_work_point(out, work.start);
         out << ", \"end\": ";
@@ -219,8 +239,14 @@ void append_sample(
         out << ", \"integrated_work\": " << work.integrated_work
             << ", \"integrated_work_compensation\": "
             << work.integrated_work_compensation
-            << ", \"closure_residual\": " << work.closure_residual
-            << '}';
+            << ", \"integrated_work_resolved\": "
+            << integrated_work_resolved
+            << ", \"integrated_work_ratio\": ";
+        append_optional_ratio(out, integrated_work_ratio);
+        out << ", \"closure_residual\": " << work.closure_residual
+            << ", \"closure_ratio\": ";
+        append_optional_ratio(out, closure_ratio);
+        out << '}';
     }
     out << '}';
 }
@@ -327,6 +353,7 @@ std::string layzer_irvine_timeline_to_json(
         << "  \"force_energy_work_availability\": \"pure_pm_fixed_comoving_kernel_only\",\n"
         << "  \"force_energy_work_timing\": \"synchronized_endpoint_momentum_after_K2\",\n"
         << "  \"force_energy_work_cic_boundary_derivative\": \"selected_cell_one_sided_at_exact_boundary\",\n"
+        << "  \"force_energy_ratio_normalization\": \"abs(quantity)/max(abs(T),abs(W_pair));undefined_only_at_zero_energy_scale\",\n"
         << "  \"closure_residual_interpretation\": \"layzer_irvine_residual_minus_measured_force_energy_work;still_contains_time_quadrature_boundary_and_roundoff_effects\",\n"
         << "  \"sample_count\": " << samples.size() << ",\n"
         << "  \"samples\": [";

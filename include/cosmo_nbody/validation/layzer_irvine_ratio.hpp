@@ -5,7 +5,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <limits>
 #include <optional>
 
 namespace cosmo_nbody::validation {
@@ -20,18 +19,16 @@ inline std::optional<core::Real> layzer_irvine_ratio(
         return std::nullopt;
     }
 
-    const core::Real abs_residual = std::abs(residual);
     const core::Real denominator = std::max(
         std::abs(potential_energy), std::abs(kinetic_energy));
-    const core::Real scale = std::max(abs_residual, denominator);
-    const core::Real tolerance = core::Real{64.0}
-        * std::numeric_limits<core::Real>::epsilon() * scale;
-    if (denominator <= tolerance) {
-        if (abs_residual <= tolerance) return core::Real{0.0};
+    if (!(denominator > 0.0)) {
+        // The normalized ratio is mathematically undefined when both energy
+        // scales vanish, including the 0/0 case. Do not manufacture a zero or
+        // use an epsilon threshold that can hide a large finite ratio.
         return std::nullopt;
     }
 
-    const core::Real ratio = abs_residual / denominator;
+    const core::Real ratio = std::abs(residual) / denominator;
     return std::isfinite(ratio)
         ? std::optional<core::Real>{ratio}
         : std::nullopt;

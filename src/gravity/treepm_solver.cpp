@@ -605,9 +605,9 @@ TreePMSolver::TreePMSolver(
       theta_(config.get_gravity().theta) {
     (void)local_bounds;
 
-    if (!std::isfinite(theta_) || theta_ <= 0.0) {
+    if (!std::isfinite(theta_) || theta_ < 0.0) {
         throw std::invalid_argument(
-            "TreePMSolver theta must be finite and positive");
+            "TreePMSolver theta must be finite and non-negative");
     }
     const core::Real box_size = config.get_box().L;
     if (!std::isfinite(box_size) || box_size <= 0.0) {

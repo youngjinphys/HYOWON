@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <stdexcept>
@@ -74,7 +75,8 @@ class StableParticleOrder {
 public:
     void ensure(
         std::size_t particle_count,
-        const config::MemoryPolicyParams& policy) {
+        const config::MemoryPolicyParams& policy,
+        std::span<std::byte> transient_storage = {}) {
         const bool compact =
             static_cast<std::uint64_t>(particle_count)
             <= static_cast<std::uint64_t>(
@@ -86,6 +88,20 @@ public:
                 "CIC stable particle-index bytes exceed size_t");
         }
         const std::size_t bytes = static_cast<std::size_t>(bytes_u64);
+
+        // The PM evolution path can lend dead FFT output storage during CIC
+        // deposition. Access it strictly through std::byte + memcpy so the
+        // object representation may be used without violating C++ aliasing or
+        // object-lifetime rules. The following forward FFT overwrites the whole
+        // complex field before any typed value is read again.
+        if (transient_storage.size() >= bytes) {
+            storage_.reset();
+            compact_ = compact;
+            transient_storage_ = transient_storage.first(bytes);
+            return;
+        }
+        transient_storage_ = {};
+
         // A reusable evolution workspace is a capacity, not an exact current
         // particle count. Distributed slab ownership can shrink and grow after
         // migration; keep the previous high-water allocation whenever its index
@@ -102,13 +118,44 @@ public:
             "cic_particle_order");
     }
 
-    void release() noexcept { storage_.reset(); }
+    void clear_transient_storage() noexcept {
+        transient_storage_ = {};
+    }
+
+    void release() noexcept {
+        clear_transient_storage();
+        storage_.reset();
+    }
 
     std::size_t retained_bytes() const noexcept {
+        // Borrowed storage is owned by another live workspace and must not be
+        // counted again as retained CIC capacity.
         return storage_ ? storage_->size_bytes() : 0;
     }
 
     void set(std::size_t cursor, std::size_t particle) {
+        if (!transient_storage_.empty()) {
+            if (compact_) {
+                if (particle > std::numeric_limits<std::uint32_t>::max()) {
+                    throw std::overflow_error(
+                        "CIC compact particle index exceeds uint32_t");
+                }
+                const std::uint32_t value =
+                    static_cast<std::uint32_t>(particle);
+                std::memcpy(
+                    transient_storage_.data()
+                        + cursor * sizeof(std::uint32_t),
+                    &value,
+                    sizeof(value));
+            } else {
+                std::memcpy(
+                    transient_storage_.data()
+                        + cursor * sizeof(std::size_t),
+                    &particle,
+                    sizeof(particle));
+            }
+            return;
+        }
         if (!storage_) {
             throw std::logic_error("CIC stable particle order is not allocated");
         }
@@ -125,6 +172,24 @@ public:
     }
 
     std::size_t at(std::size_t cursor) const {
+        if (!transient_storage_.empty()) {
+            if (compact_) {
+                std::uint32_t value = 0;
+                std::memcpy(
+                    &value,
+                    transient_storage_.data()
+                        + cursor * sizeof(std::uint32_t),
+                    sizeof(value));
+                return static_cast<std::size_t>(value);
+            }
+            std::size_t value = 0;
+            std::memcpy(
+                &value,
+                transient_storage_.data()
+                    + cursor * sizeof(std::size_t),
+                sizeof(value));
+            return value;
+        }
         if (!storage_) {
             throw std::logic_error("CIC stable particle order is not allocated");
         }
@@ -137,6 +202,7 @@ public:
 
 private:
     bool compact_{true};
+    std::span<std::byte> transient_storage_{};
     std::unique_ptr<runtime::RawScratchBuffer> storage_;
 };
 
@@ -163,8 +229,10 @@ struct XPlaneStorage {
     std::vector<std::size_t> offsets;
     std::vector<std::size_t> thread_counts;
     std::vector<std::size_t> thread_offsets;
+    std::span<std::byte> transient_particle_order_storage{};
 
     void release() noexcept {
+        transient_particle_order_storage = {};
         particles.release();
         std::vector<std::size_t>().swap(offsets);
         std::vector<std::size_t>().swap(thread_counts);
@@ -204,7 +272,10 @@ XPlaneBins build_x_plane_bins(
     const std::size_t particle_count = pos_x.size();
     const std::size_t mesh_size = geom.grid_size();
 
-    storage.particles.ensure(particle_count, policy);
+    storage.particles.ensure(
+        particle_count,
+        policy,
+        storage.transient_particle_order_storage);
     storage.offsets.assign(mesh_size + 1, 0);
     if (particle_count == 0) {
         storage.thread_counts.clear();
@@ -343,6 +414,15 @@ std::size_t CICDepositWorkspace::retained_bytes() const noexcept {
     return impl_ ? impl_->bins.retained_bytes() : 0;
 }
 
+void CICDepositWorkspace::set_transient_stable_index_storage(
+    std::span<std::byte> storage) noexcept {
+    if (!impl_) return;
+    impl_->bins.transient_particle_order_storage = storage;
+    if (storage.empty()) {
+        impl_->bins.particles.clear_transient_storage();
+    }
+}
+
 CICMassAssignment::CICMassAssignment(
     const MeshGeometry& geom,
     config::MemoryPolicyParams memory_policy)
@@ -376,7 +456,15 @@ void CICMassAssignment::deposit_reusing_workspace(
         throw std::logic_error(
             "CIC reusable workspace is in a moved-from state");
     }
-    deposit_impl(
-        pos_x, pos_y, pos_z, masses, uniform_mass, &workspace,
-        field, right_ghost);
+    try {
+        deposit_impl(
+            pos_x, pos_y, pos_z, masses, uniform_mass, &workspace,
+            field, right_ghost);
+    } catch (...) {
+        workspace.set_transient_stable_index_storage({});
+        throw;
+    }
+    // A transient stable-index loan is meaningful only during this deposit.
+    // Owned reusable binning scratch is deliberately retained.
+    workspace.set_transient_stable_index_storage({});
 }

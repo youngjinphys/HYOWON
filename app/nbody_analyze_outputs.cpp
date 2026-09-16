@@ -311,7 +311,7 @@ void write_xi_csv(
            << "# selection=periodic_friends_of_friends\n"
            << "# fof_linking_length_b=" << fof_linking_length_b << '\n'
            << "# fof_min_particles=" << fof_min_particles << '\n'
-           << "# center=fof_candidate_circular_mass_weighted_com\n"
+           << "# center=fof_candidate_periodic_intrinsic_mass_weighted_com\n"
            << "# radius_unit=Mpc_per_h\n"
            << "# box_size_Mpc_h=" << xi.box_size << '\n'
            << "# estimator=" << xi.estimator << '\n'

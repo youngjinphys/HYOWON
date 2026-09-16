@@ -55,8 +55,9 @@ public:
             throw std::logic_error(
                 "EvolutionPMSolverHandle has no configured PM solver");
         }
+
         post_force_energy_available_ = false;
-        auto diagnostics = solver_->compute_forces_in_place(
+        auto diagnostics = solver_->compute_forces_for_evolution(
             pos_x,
             pos_y,
             pos_z,
@@ -66,7 +67,7 @@ public:
             acc_y,
             acc_z,
             collect_potential_energy,
-            &deposition_workspace_);
+            deposition_workspace_);
         // collect_potential_energy may consume/overwrite the current real-space
         // potential on a distributed backend. Only the no-collection path can be
         // followed by the single-use endpoint energy-gradient measurement.

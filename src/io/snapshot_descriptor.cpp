@@ -2,6 +2,7 @@
 
 #include "cosmo_nbody/cosmology/flat_matter_lambda.hpp"
 #include "cosmo_nbody/cosmology/units.hpp"
+#include "cosmo_nbody/ic/particle_lattice_bandlimit.hpp"
 #include "cosmo_nbody/io/bounded_hdf5_string.hpp"
 #include "cosmo_nbody/io/content_hash.hpp"
 #include "cosmo_nbody/io/hdf5_handle.hpp"
@@ -1038,11 +1039,13 @@ SnapshotDescriptor read_snapshot_descriptor(
             descriptor.run_metadata_json, "pm_mesh_per_dimension");
     descriptor.generation_provenance = read_snapshot_generation_provenance(
         descriptor.run_metadata_json);
-    const auto requested_support = canonical_run_metadata_string(
-        descriptor.run_metadata_json, "ic_mode") == "generate"
-        ? descriptor.generation_provenance.ic_max_mode_per_axis
-        : std::nullopt;
-    if (fingerprint_ic_support(descriptor.physics_fingerprint) != requested_support) {
+    const bool generated = canonical_run_metadata_string(
+        descriptor.run_metadata_json, "ic_mode") == "generate";
+    const auto recorded_support = fingerprint_ic_support(descriptor.physics_fingerprint);
+    const bool support_matches = generated
+        ? recorded_support == descriptor.generation_provenance.ic_max_mode_per_axis
+        : !recorded_support.has_value();
+    if (!support_matches) {
         throw std::runtime_error("Snapshot IC support metadata disagrees with PhysicsFingerprint");
     }
     if (descriptor.generation_provenance.power_spectrum_fidelity.size()
@@ -1272,11 +1275,15 @@ SnapshotDescriptor read_snapshot_descriptor(
         throw std::runtime_error(
             "Generated-IC descriptor requires its IC mesh dimension to be an integer multiple of the particle dimension");
     }
-    if (descriptor.lpt_order == 2
-        && descriptor.ic_mesh_per_dimension / 2
-            < descriptor.particles_per_dimension) {
-        throw std::runtime_error(
-            "Generated 2LPT descriptor requires its IC mesh dimension to be at least twice the particle dimension");
+    if (descriptor.lpt_order == 2) {
+        const auto effective_support =
+            descriptor.generation_provenance.ic_effective_max_mode_per_axis;
+        if (!effective_support
+            || !cosmo_nbody::ic::projected_2lpt_source_mesh_is_alias_free(
+                descriptor.ic_mesh_per_dimension, *effective_support)) {
+            throw std::runtime_error(
+                "Generated projected 2LPT descriptor requires M > 3*K for its retained Fourier support");
+        }
     }
     if (descriptor.particles_per_dimension
         > std::numeric_limits<std::uint64_t>::max()

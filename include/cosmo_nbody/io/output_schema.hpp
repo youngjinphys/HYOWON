@@ -175,7 +175,7 @@ inline const std::string VAL_HALO_DERIVED_TRACER_SPECIES =
 inline const std::string VAL_HALO_DERIVED_SELECTION_FUNCTION =
     "one_property_row_per_fof_membership";
 inline const std::string VAL_HALO_DERIVED_NORMALIZATION_CONVENTION =
-    "member_mass_weighted_snapshot_phase_space";
+    "member_mass_weighted_snapshot_phase_space;center=periodic_intrinsic_mass_weighted_frechet_mean_squared_minimum_image_distance";
 
 inline const std::string DATASET_MEMBERSHIP_GROUP_IDS = "GroupIDs";
 inline const std::string DATASET_MEMBERSHIP_GROUP_SIZES = "GroupSizes";

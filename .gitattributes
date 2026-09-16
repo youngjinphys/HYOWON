@@ -1,1 +1,6 @@
 * text=auto
+
+# Preserve hashed CAMB reference inputs byte for byte across checkouts.
+# CAMB's generated text includes trailing whitespace covered by its input hash.
+examples/quickstart_camb/camb_parameters.txt -text -whitespace
+examples/quickstart_camb/linear_cb_z0.dat -text

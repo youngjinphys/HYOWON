@@ -12,6 +12,8 @@ namespace cosmo_nbody::halo {
 struct DensityPeakDeblendOptions {
     // Scientific topology coordinates are explicit; sentinel values are invalid.
     std::size_t k_neighbors{0};
+    // Historical "host" vocabulary in this deblender means a retained local
+    // density basin only. It is not a cosmological host/subhalo classification.
     std::size_t minimum_host_particles{0};
     core::Real saddle_to_lower_peak_merge_ratio{-1.0};
 };
@@ -31,10 +33,14 @@ struct DensityPeakRecord {
     std::size_t peak_particle_index{0};
     core::Vec3 position{};
     core::Real density{0.0};
+    // True when the local peak survives the configured saddle merge and seeds a
+    // deblended density basin; this does not assert distinct-host status.
     bool retained_as_host{false};
     std::optional<core::ParticleId> merged_into_peak_particle_id;
 };
 
+// Historical internal type name. Semantically this is a retained density-basin
+// seed; no cosmological host/subhalo classification is implied.
 struct DeblendedHostSeed {
     std::size_t candidate_id{0};
     std::size_t seed_id{0};

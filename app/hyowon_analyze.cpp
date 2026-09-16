@@ -2,10 +2,12 @@
 
 #include "cosmo_nbody/analysis/analysis_request.hpp"
 #include "cosmo_nbody/build_info.hpp"
+#include "cosmo_nbody/io/checked_output_file.hpp"
 #include "cosmo_nbody/io/durable_file_publication.hpp"
 #include "cosmo_nbody/runtime/thread_policy.hpp"
 
 #include <exception>
+#include <filesystem>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -13,6 +15,35 @@
 #include <vector>
 
 namespace {
+
+void write_analysis_build_provenance(
+    const std::filesystem::path& output_directory) {
+    const auto path = output_directory / "analysis_build_provenance.json";
+    auto output = cosmo_nbody::io::open_checked_output_file(
+        path, "analysis build provenance");
+    output
+        << "{\n"
+        << "  \"product_kind\": \"analysis_build_provenance\",\n"
+        << "  \"software_name\": \""
+        << cosmo_nbody::build_info::SOFTWARE_NAME << "\",\n"
+        << "  \"software_version\": \""
+        << cosmo_nbody::build_info::VERSION << "\",\n"
+        << "  \"release_stage\": \""
+        << cosmo_nbody::build_info::RELEASE_STAGE << "\",\n"
+        << "  \"source_commit\": \""
+        << cosmo_nbody::build_info::SOURCE_COMMIT << "\",\n"
+        << "  \"source_tree\": \""
+        << cosmo_nbody::build_info::SOURCE_TREE << "\",\n"
+        << "  \"source_state\": \""
+        << cosmo_nbody::build_info::SOURCE_STATE << "\",\n"
+        << "  \"source_capture_phase\": \""
+        << cosmo_nbody::build_info::SOURCE_CAPTURE_PHASE << "\",\n"
+        << "  \"build_provenance_scope\": "
+           "\"configure_time_git_observation_not_executable_attestation\"\n"
+        << "}\n";
+    cosmo_nbody::io::close_checked_output_file(
+        output, path, "analysis build provenance");
+}
 
 int entry_main(int argc, char** argv) {
     if (cosmo_nbody::build_info::write_version_if_requested(argc, argv, std::cout)) {
@@ -43,6 +74,7 @@ int entry_main(int argc, char** argv) {
         request.output_directory,
         "analysis output directory");
     try {
+        write_analysis_build_provenance(output_directory.staging_path());
         cosmo_nbody::app::nbody_analyze::run_pipeline(
             request,
             host_threads.thread_count(),

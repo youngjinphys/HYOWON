@@ -113,6 +113,10 @@ void write_named_so_derived_products(
     output
         << "# object_kind=density_peak_centered_standard_spherical_overdensity\n"
         << "# seed_selection=fof_candidates_then_fixed_k_density_peak_deblend_retained_host_minimum_then_named_so\n"
+        << "# catalog_semantics=independent_seeded_so_measurements_not_distinct_host_catalog\n"
+        << "# host_subhalo_classification=not_performed\n"
+        << "# overlapping_so_apertures=allowed\n"
+        << "# so_crossing_policy=first_outward_mean_enclosed_density_crossing\n"
         << "# fof_linking_length_b=" << fof_linking_length_b << '\n'
         << "# fof_min_particles=" << fof_min_particles << '\n'
         << "# peak_density_k_neighbors=" << peak_density_k_neighbors << '\n'
@@ -213,10 +217,14 @@ void write_named_so_derived_products(
             }
 
             // One exact geometric membership feeds every downstream consumer and
-            // the persisted membership catalog. Vmax establishes radius order;
-            // HaloSpin then canonicalizes the same vector by stable ParticleID.
+            // the persisted membership catalog. Vmax establishes exact radial
+            // shell order; HaloSpin then canonicalizes by stable ParticleID.
             const analysis::VmaxResult vmax = analysis::compute_vmax(
-                particles, members, scale_factor);
+                particles,
+                evaluation.seed.center,
+                box_size,
+                members,
+                scale_factor);
             const analysis::SpinResult spin = analysis::HaloSpin::compute_members(
                 particles,
                 evaluation.seed.center,

@@ -128,8 +128,8 @@ private:
 #endif
 
     core::Real* real_buffer_{nullptr};
-    MpiFFTRealStorage* real_storage_{nullptr};
 #ifdef COSMO_NBODY_HAS_FFTW_MPI
+    MpiFFTRealStorage* real_storage_{nullptr};
     void* forward_plan_{nullptr};
     void* inverse_plan_{nullptr};
 #endif

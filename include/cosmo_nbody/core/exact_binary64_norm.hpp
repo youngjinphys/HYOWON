@@ -67,20 +67,25 @@ inline ExactNormUInt128 exact_norm_multiply_u64(
 
 // A finite binary64 is an integer multiple of 2^-1074. Its square is therefore
 // an integer multiple of 2^-2148. The largest finite square reaches bit 4195 in
-// those units; summing three squares needs at most two additional carry bits.
-// The conceptual accumulator has 66 limbs [0,65], but one square touches at
-// most three limbs. The hot three-square neighbor predicate therefore needs
-// only nine direct limb words plus one carry endpoint per addition.
-//
-// AABB cutoff classification reuses the same accumulator for three half
-// squares, three center squares, and six |center|*half products. That is at
-// most seven distinct binary scales, each touching three consecutive limbs,
-// plus one carry endpoint per addition, so 48 sorted sparse entries cover
-// both the hot predicate and the cube classifier without clearing 66 words.
+// those units: |x*y| < 2^2048 becomes an integer < 2^4196. Each side of a
+// three-axis across-boundary norm has at most 15 positive / 12 negative
+// products. Comparing two distances cross-adds at most 27 products per side,
+// hence each integer is < 27*2^4196 < 2^4201. A radius comparison needs at most
+// 15 / 13 products; the AABB expressions below need at most 12 / 7. Vmax radius
+// rounding compares 4*distance^2 with (lower+upper)^2 and needs at most 60 / 52
+// products, still < 2^4202. Thus 66*64 = 4224 bits suffice for these expressions,
+// with at least 22 spare top bits.
+// This is a bound on these callers, not on arbitrary repeated accumulation;
+// add_word checks any eventual overflow. The sparse representation stores at most
+// one nonzero word per conceptual limb, so 66 entries is a structural capacity,
+// not a term-count admission threshold. This also permits exact algebraic
+// combination of periodic-distance expressions without adding a second,
+// expression-specific sparse-entry limit.
 class ExactBinary64SquareAccumulator {
 public:
     static constexpr std::size_t limb_count = 66;
-    static constexpr std::size_t max_entries = 48;
+    static constexpr std::size_t max_entries = limb_count;
+    static_assert(limb_count * 64 >= 4202);
 
     void add_square(double value) {
         const std::uint64_t bits =
@@ -133,6 +138,12 @@ public:
         add_shifted(
             exact_norm_multiply_u64(lhs_significand, rhs_significand),
             static_cast<std::size_t>(shift));
+    }
+
+    void add_accumulator(const ExactBinary64SquareAccumulator& rhs) {
+        for (std::size_t position = 0; position < rhs.entry_count_; ++position) {
+            add_word(rhs.entries_[position].index, rhs.entries_[position].word);
+        }
     }
 
     int compare(const ExactBinary64SquareAccumulator& rhs) const noexcept {
@@ -312,7 +323,7 @@ private:
 
             if (entry_count_ >= max_entries) {
                 throw std::overflow_error(
-                    "Exact binary64 squared norm exceeded its proven sparse-entry envelope");
+                    "Exact binary64 squared norm exceeded its structural limb capacity");
             }
             for (std::size_t move = entry_count_;
                  move > position;

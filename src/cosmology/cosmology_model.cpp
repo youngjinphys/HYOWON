@@ -399,7 +399,7 @@ core::Real CosmologyModel::interpolate_component(
     if (component < 0 || component > 3) {
         throw std::logic_error("Invalid growth component");
     }
-    if (a > 1.0 + 64.0 * std::numeric_limits<core::Real>::epsilon()) {
+    if (a > 1.0) {
         throw std::out_of_range(
             "Growth table supports a <= 1 only; future-time extrapolation is disabled");
     }

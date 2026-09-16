@@ -13,7 +13,11 @@ namespace cosmo_nbody::halo {
 
 enum class HaloCenterKind {
     Unknown,
-    PeriodicMassWeightedCircularCOM,
+    PeriodicIntrinsicMassWeightedCOM,
+    // Source-compatibility alias for the legacy spelling used before the
+    // intrinsic torus mass center replaced the sine/cosine circular
+    // (extrinsic/chordal) mean.
+    PeriodicMassWeightedCircularCOM = PeriodicIntrinsicMassWeightedCOM,
     DensityPeakParticle,
 };
 
@@ -65,12 +69,15 @@ struct SOMassMeasurement {
     bool crossing_resolved{false};
 };
 
+// Membership views name products that the analyzer can actually materialize.
+// Distinct host/subhalo membership is intentionally absent until a physically
+// defensible classifier is implemented rather than encoded as an unavailable
+// speculative view.
 enum class HaloMembershipView {
     Unknown,
     FoFCandidateAll,
     DeblendedDensityBasinAll,
     GeometricSOAll,
-    BoundHostExcludingSubstructure,
 };
 
 std::string_view halo_membership_view_name(HaloMembershipView view) noexcept;

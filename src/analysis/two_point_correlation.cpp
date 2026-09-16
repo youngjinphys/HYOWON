@@ -28,15 +28,75 @@ struct BinLayout {
     std::vector<core::Real> edges;
     std::vector<core::Real> midpoints;
 
-    std::size_t locate(core::Real radius) const noexcept {
-        if (!std::isfinite(radius)
-            || radius < edges.front()
-            || radius >= edges.back()) {
+    std::size_t locate_periodic_exact(
+        const core::Vec3& first,
+        const core::Vec3& second,
+        core::Real box_size) const {
+        const auto exact_relation = [&](std::size_t edge_index) {
+            return math::minimum_image_distance_to_radius_compare_wrapped(
+                first, second, box_size, edges[edge_index]);
+        };
+        const auto first_strictly_above = [&](
+            std::size_t begin,
+            std::size_t end) {
+            while (begin < end) {
+                const std::size_t middle = begin + (end - begin) / 2;
+                if (exact_relation(middle) < 0) {
+                    end = middle;
+                } else {
+                    begin = middle + 1;
+                }
+            }
+            return begin;
+        };
+
+        // A rounded distance is only a search hint. The candidate bin is accepted
+        // only after exact endpoint predicates prove both half-open boundaries;
+        // if the hint crossed any number of represented edges, an exact binary
+        // search on the corresponding side recovers the mathematical bin.
+        const core::Real dx = math::minimum_image_distance_wrapped(
+            first.x, second.x, box_size);
+        const core::Real dy = math::minimum_image_distance_wrapped(
+            first.y, second.y, box_size);
+        const core::Real dz = math::minimum_image_distance_wrapped(
+            first.z, second.z, box_size);
+        const core::Real approximate = core::scale_safe_norm3(dx, dy, dz);
+
+        std::size_t first_above = 0;
+        if (std::isfinite(approximate)) {
+            const auto upper = std::upper_bound(
+                edges.begin(), edges.end(), approximate);
+            std::size_t hint = 0;
+            if (upper == edges.begin()) {
+                hint = 0;
+            } else if (upper == edges.end()) {
+                hint = edges.size() - 2;
+            } else {
+                hint = static_cast<std::size_t>(
+                    std::distance(edges.begin(), upper) - 1);
+            }
+
+            const int lower_relation = exact_relation(hint);
+            const int upper_relation = exact_relation(hint + 1);
+            if (lower_relation >= 0 && upper_relation < 0) {
+                return hint;
+            }
+            if (lower_relation < 0) {
+                first_above = first_strictly_above(0, hint + 1);
+            } else {
+                first_above = first_strictly_above(
+                    hint + 1, edges.size());
+            }
+        } else {
+            first_above = first_strictly_above(0, edges.size());
+        }
+
+        // Bins are [edge_i, edge_{i+1}). Equality with an interior edge belongs
+        // to the following bin; equality with the final edge is out of range.
+        if (first_above == 0 || first_above == edges.size()) {
             return invalid_bin;
         }
-        const auto upper = std::upper_bound(edges.begin(), edges.end(), radius);
-        if (upper == edges.begin() || upper == edges.end()) return invalid_bin;
-        return static_cast<std::size_t>(std::distance(edges.begin(), upper) - 1);
+        return first_above - 1;
     }
 };
 
@@ -271,7 +331,12 @@ CellGrid build_cell_grid(
         throw std::overflow_error(
             "TwoPointCorrelation cell width is invalid");
     }
-    const core::Real reach_real = std::ceil(max_radius / grid.cell_width);
+
+    // Candidate discovery is deliberately one cell wider than the rounded
+    // quotient requires. It is an implementation superset, not a scientific
+    // distance tolerance: exact pair predicates below decide every bin.
+    const core::Real reach_real =
+        std::ceil(max_radius / grid.cell_width) + 1.0;
     if (!std::isfinite(reach_real)
         || reach_real < 1.0
         || reach_real > static_cast<core::Real>(std::numeric_limits<int>::max())) {
@@ -371,14 +436,8 @@ bool record_distance(
     const BinLayout& layout,
     std::vector<std::size_t>& bins,
     std::size_t& total) {
-    const core::Real dx = math::minimum_image_distance_wrapped(
-        first.x, second.x, box_size);
-    const core::Real dy = math::minimum_image_distance_wrapped(
-        first.y, second.y, box_size);
-    const core::Real dz = math::minimum_image_distance_wrapped(
-        first.z, second.z, box_size);
-    const core::Real distance = core::scale_safe_norm3(dx, dy, dz);
-    const std::size_t bin = layout.locate(distance);
+    const std::size_t bin = layout.locate_periodic_exact(
+        first, second, box_size);
     if (bin == invalid_bin) return true;
     if (bins[bin] == std::numeric_limits<std::size_t>::max()
         || total == std::numeric_limits<std::size_t>::max()) {

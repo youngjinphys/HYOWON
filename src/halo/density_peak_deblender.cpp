@@ -9,7 +9,6 @@
 #include <cstddef>
 #include <exception>
 #include <limits>
-#include <memory>
 #include <numbers>
 #include <numeric>
 #include <stdexcept>
@@ -36,10 +35,14 @@ struct LocalParticle {
     core::Real mass{0.0};
 };
 
+// The exact torus ordering is not cached as a rounded scalar. The conservative
+// upper squared radius exists only for k-d-tree pruning; scientific neighbour
+// identity is decided by the exact endpoint predicate in NeighborCloser.
 struct Neighbor {
     std::size_t local_index{0};
     core::ParticleId id{0};
-    long double distance{0.0L};
+    long double distance_upper_squared{
+        std::numeric_limits<long double>::infinity()};
 };
 
 struct KdNode {
@@ -81,30 +84,6 @@ void add_array_bytes(
         context);
 }
 
-bool neighbor_is_closer(const Neighbor& lhs, const Neighbor& rhs) {
-    if (lhs.distance != rhs.distance) {
-        return lhs.distance < rhs.distance;
-    }
-    return lhs.id < rhs.id;
-}
-
-long double periodic_distance(
-    const core::Vec3& first,
-    const core::Vec3& second,
-    core::Real box_size) {
-    const core::Vec3 displacement = math::minimum_image_displacement(
-        first, second, box_size);
-    const long double distance = core::scale_safe_norm3(
-        static_cast<long double>(displacement.x),
-        static_cast<long double>(displacement.y),
-        static_cast<long double>(displacement.z));
-    if (!std::isfinite(distance) || distance < 0.0L) {
-        throw std::invalid_argument(
-            "Density peak deblending encountered invalid periodic geometry");
-    }
-    return distance;
-}
-
 core::Real coordinate(const core::Vec3& point, int axis) {
     if (axis == 0) return point.x;
     if (axis == 1) return point.y;
@@ -121,14 +100,6 @@ void extend_bounds(
     upper.x = std::max(upper.x, point.x);
     upper.y = std::max(upper.y, point.y);
     upper.z = std::max(upper.z, point.z);
-}
-
-bool is_canonical_position(
-    const core::Vec3& position,
-    core::Real box_size) {
-    return position.x >= 0.0 && position.x < box_size
-        && position.y >= 0.0 && position.y < box_size
-        && position.z >= 0.0 && position.z < box_size;
 }
 
 core::Real positive_difference_down(
@@ -153,7 +124,10 @@ core::Real interval_distance_down(
     return 0.0;
 }
 
-core::Real periodic_interval_distance_down(
+// Fast pruning filter only. Because shifted interval endpoints are represented
+// in binary64, this value is never trusted to discard a node by itself; a
+// candidate prune is re-proved by periodic_box_distance_squared_verified_down.
+core::Real periodic_interval_distance_filter_down(
     core::Real query,
     core::Real lower,
     core::Real upper,
@@ -175,24 +149,146 @@ core::Real periodic_interval_distance_down(
     });
 }
 
-long double periodic_box_distance_down(
+long double squared_sum_down(const core::Real components[3]) {
+    long double total = 0.0L;
+    for (const core::Real component : {components[0], components[1], components[2]}) {
+        const long double wide = static_cast<long double>(component);
+        const long double square = wide * wide;
+        if (!std::isfinite(square) || (wide != 0.0L && square == 0.0L)) {
+            return 0.0L;
+        }
+        const long double square_down = square == 0.0L
+            ? 0.0L
+            : std::nextafter(square, 0.0L);
+        const long double sum = total + square_down;
+        if (!std::isfinite(sum)) return 0.0L;
+        total = sum == 0.0L ? 0.0L : std::nextafter(sum, 0.0L);
+    }
+    return total;
+}
+
+long double periodic_box_distance_squared_filter_down(
     const core::Vec3& query,
     const core::Vec3& lower,
     const core::Vec3& upper,
     core::Real box_size) {
-    const core::Real x = periodic_interval_distance_down(
-        query.x, lower.x, upper.x, box_size);
-    const core::Real y = periodic_interval_distance_down(
-        query.y, lower.y, upper.y, box_size);
-    const core::Real z = periodic_interval_distance_down(
-        query.z, lower.z, upper.z, box_size);
-    const long double distance = core::scale_safe_norm3(
-        static_cast<long double>(x),
-        static_cast<long double>(y),
-        static_cast<long double>(z));
-    if (!(distance > 0.0L) || !std::isfinite(distance)) return 0.0L;
-    return std::nextafter(distance, 0.0L);
+    const core::Real components[3]{
+        periodic_interval_distance_filter_down(query.x, lower.x, upper.x, box_size),
+        periodic_interval_distance_filter_down(query.y, lower.y, upper.y, box_size),
+        periodic_interval_distance_filter_down(query.z, lower.z, upper.z, box_size),
+    };
+    return squared_sum_down(components);
 }
+
+// Find a represented lower radius whose relation to the exact 1D torus distance
+// is explicitly certified. The rounded component is only the starting proposal;
+// nextafter is repeated only while the exact predicate says that proposal is too
+// large. This is a proof loop, not an empirical tolerance.
+core::Real exact_axis_distance_lower(
+    core::Real query,
+    core::Real endpoint,
+    core::Real box_size) {
+    core::Real lower = math::minimum_image_distance_wrapped(
+        query, endpoint, box_size);
+    if (!std::isfinite(lower) || lower < 0.0) return 0.0;
+    const core::Vec3 from{query, 0.0, 0.0};
+    const core::Vec3 to{endpoint, 0.0, 0.0};
+    while (lower > 0.0) {
+        const int relation =
+            math::minimum_image_distance_to_radius_compare_wrapped(
+                from, to, box_size, lower);
+        if (relation >= 0) break; // exact d >= represented lower
+        const core::Real next = std::nextafter(lower, core::Real{0.0});
+        if (!(next < lower)) return 0.0;
+        lower = next;
+    }
+    return lower;
+}
+
+core::Real periodic_interval_distance_verified_down(
+    core::Real query,
+    core::Real lower,
+    core::Real upper,
+    core::Real box_size) {
+    if (query >= lower && query <= upper) return 0.0;
+    return std::min(
+        exact_axis_distance_lower(query, lower, box_size),
+        exact_axis_distance_lower(query, upper, box_size));
+}
+
+long double periodic_box_distance_squared_verified_down(
+    const core::Vec3& query,
+    const core::Vec3& lower,
+    const core::Vec3& upper,
+    core::Real box_size) {
+    const core::Real components[3]{
+        periodic_interval_distance_verified_down(query.x, lower.x, upper.x, box_size),
+        periodic_interval_distance_verified_down(query.y, lower.y, upper.y, box_size),
+        periodic_interval_distance_verified_down(query.z, lower.z, upper.z, box_size),
+    };
+    return squared_sum_down(components);
+}
+
+// Build a represented finite radius that is proven by the exact torus predicate
+// to enclose this pair, then square it outward in long double for pruning. The
+// loop stops at the first binary64 radius whose exact comparison contains the
+// pair. If no finite radius is representable, +inf disables this prune.
+long double periodic_distance_upper_squared(
+    const core::Vec3& first,
+    const core::Vec3& second,
+    core::Real box_size) {
+    const core::Vec3 displacement = math::minimum_image_displacement(
+        first, second, box_size);
+    core::Real radius = core::scale_safe_norm3(
+        displacement.x, displacement.y, displacement.z);
+    if (!std::isfinite(radius) || radius < 0.0) {
+        return std::numeric_limits<long double>::infinity();
+    }
+
+    for (;;) {
+        const int relation =
+            math::minimum_image_distance_to_radius_compare_wrapped(
+                first, second, box_size, radius);
+        if (relation <= 0) break;
+        const core::Real next = std::nextafter(
+            radius, std::numeric_limits<core::Real>::infinity());
+        if (!std::isfinite(next) || !(next > radius)) {
+            return std::numeric_limits<long double>::infinity();
+        }
+        radius = next;
+    }
+
+    const long double wide = static_cast<long double>(radius);
+    const long double squared = wide * wide;
+    if (!std::isfinite(squared)) {
+        return std::numeric_limits<long double>::infinity();
+    }
+    return std::nextafter(
+        squared, std::numeric_limits<long double>::infinity());
+}
+
+struct NeighborCloser {
+    const std::vector<LocalParticle>* local{nullptr};
+    std::size_t center_index{0};
+    core::Real box_size{0.0};
+
+    bool operator()(const Neighbor& lhs, const Neighbor& rhs) const {
+        if (local == nullptr
+            || center_index >= local->size()
+            || lhs.local_index >= local->size()
+            || rhs.local_index >= local->size()) {
+            throw std::logic_error(
+                "Density peak neighbor comparator observed an invalid index");
+        }
+        const int relation = math::minimum_image_distances_compare_wrapped(
+            (*local)[center_index].position,
+            (*local)[lhs.local_index].position,
+            (*local)[rhs.local_index].position,
+            box_size);
+        if (relation != 0) return relation < 0;
+        return lhs.id < rhs.id;
+    }
+};
 
 class PeriodicKdTree {
 public:
@@ -222,15 +318,15 @@ public:
                 "Density peak periodic k-d tree query received an invalid extent");
         }
         selection_scratch.clear();
-        query_node(root_, center_index, effective_k, selection_scratch);
+        const NeighborCloser closer{&local_, center_index, box_size_};
+        query_node(
+            root_, center_index, effective_k, closer, selection_scratch);
         if (selection_scratch.size() != effective_k) {
             throw std::logic_error(
                 "Density peak periodic k-d tree query returned too few unique neighbors");
         }
         std::sort(
-            selection_scratch.begin(),
-            selection_scratch.end(),
-            neighbor_is_closer);
+            selection_scratch.begin(), selection_scratch.end(), closer);
     }
 
 private:
@@ -295,70 +391,80 @@ private:
         std::size_t candidate_index,
         std::size_t center_index,
         std::size_t effective_k,
+        const NeighborCloser& closer,
         std::vector<Neighbor>& selection_scratch) const {
         if (candidate_index == center_index) return;
-        const Neighbor candidate{
+        Neighbor candidate{
             candidate_index,
             local_[candidate_index].id,
-            periodic_distance(
+            periodic_distance_upper_squared(
                 local_[center_index].position,
                 local_[candidate_index].position,
                 box_size_),
         };
         if (selection_scratch.size() < effective_k) {
-            selection_scratch.push_back(candidate);
+            selection_scratch.push_back(std::move(candidate));
             std::push_heap(
-                selection_scratch.begin(),
-                selection_scratch.end(),
-                neighbor_is_closer);
+                selection_scratch.begin(), selection_scratch.end(), closer);
             return;
         }
-        if (!neighbor_is_closer(candidate, selection_scratch.front())) return;
+        if (!closer(candidate, selection_scratch.front())) return;
         std::pop_heap(
-            selection_scratch.begin(),
-            selection_scratch.end(),
-            neighbor_is_closer);
-        selection_scratch.back() = candidate;
+            selection_scratch.begin(), selection_scratch.end(), closer);
+        selection_scratch.back() = std::move(candidate);
         std::push_heap(
-            selection_scratch.begin(),
-            selection_scratch.end(),
-            neighbor_is_closer);
+            selection_scratch.begin(), selection_scratch.end(), closer);
     }
 
     void query_node(
         std::size_t node_index,
         std::size_t center_index,
         std::size_t effective_k,
+        const NeighborCloser& closer,
         std::vector<Neighbor>& selection_scratch) const {
         if (node_index == invalid_index) return;
         const KdNode& node = nodes_[node_index];
         if (selection_scratch.size() == effective_k
-            && periodic_box_distance_down(
-                   local_[center_index].position,
-                   node.lower,
-                   node.upper,
-                   box_size_)
-                > selection_scratch.front().distance) {
-            return;
+            && std::isfinite(selection_scratch.front().distance_upper_squared)) {
+            const long double filter_lower =
+                periodic_box_distance_squared_filter_down(
+                    local_[center_index].position,
+                    node.lower,
+                    node.upper,
+                    box_size_);
+            if (filter_lower
+                > selection_scratch.front().distance_upper_squared) {
+                const long double verified_lower =
+                    periodic_box_distance_squared_verified_down(
+                        local_[center_index].position,
+                        node.lower,
+                        node.upper,
+                        box_size_);
+                if (verified_lower
+                    > selection_scratch.front().distance_upper_squared) {
+                    return;
+                }
+            }
         }
 
         consider_neighbor(
             node.particle_index,
             center_index,
             effective_k,
+            closer,
             selection_scratch);
 
         std::size_t first = node.left;
         std::size_t second = node.right;
         if (first != invalid_index && second != invalid_index) {
             const long double first_distance =
-                periodic_box_distance_down(
+                periodic_box_distance_squared_filter_down(
                     local_[center_index].position,
                     nodes_[first].lower,
                     nodes_[first].upper,
                     box_size_);
             const long double second_distance =
-                periodic_box_distance_down(
+                periodic_box_distance_squared_filter_down(
                     local_[center_index].position,
                     nodes_[second].lower,
                     nodes_[second].upper,
@@ -372,11 +478,13 @@ private:
             first,
             center_index,
             effective_k,
+            closer,
             selection_scratch);
         query_node(
             second,
             center_index,
             effective_k,
+            closer,
             selection_scratch);
     }
 
@@ -386,66 +494,6 @@ private:
     std::vector<std::size_t> build_order_;
     std::size_t root_{invalid_index};
 };
-
-void select_exact_neighbors_bruteforce(
-    const std::vector<LocalParticle>& local,
-    std::size_t center_index,
-    std::size_t effective_k,
-    core::Real box_size,
-    std::vector<Neighbor>& selection_scratch) {
-    if (center_index >= local.size() || effective_k == 0
-        || effective_k >= local.size()) {
-        throw std::logic_error(
-            "Density peak exact-neighbor selection received an invalid extent");
-    }
-    selection_scratch.clear();
-    for (std::size_t candidate_index = 0;
-         candidate_index < local.size();
-         ++candidate_index) {
-        if (candidate_index == center_index) continue;
-        selection_scratch.push_back({
-            candidate_index,
-            local[candidate_index].id,
-            periodic_distance(
-                local[center_index].position,
-                local[candidate_index].position,
-                box_size),
-        });
-    }
-    if (effective_k < selection_scratch.size()) {
-        std::nth_element(
-            selection_scratch.begin(),
-            selection_scratch.begin()
-                + static_cast<std::ptrdiff_t>(effective_k),
-            selection_scratch.end(),
-            neighbor_is_closer);
-        selection_scratch.resize(effective_k);
-    }
-    std::sort(
-        selection_scratch.begin(),
-        selection_scratch.end(),
-        neighbor_is_closer);
-}
-
-void select_exact_neighbors(
-    const std::vector<LocalParticle>& local,
-    const PeriodicKdTree* tree,
-    std::size_t center_index,
-    std::size_t effective_k,
-    core::Real box_size,
-    std::vector<Neighbor>& selection_scratch) {
-    if (tree != nullptr) {
-        tree->select_exact_neighbors(
-            center_index, effective_k, selection_scratch);
-        return;
-    }
-    select_exact_neighbors_bruteforce(
-        local,
-        center_index,
-        effective_k,
-        box_size,
-        selection_scratch);
-}
 
 std::size_t deblend_worker_count() {
 #ifdef COSMO_NBODY_HAS_OPENMP
@@ -478,11 +526,10 @@ std::size_t merge_query_batch_capacity(
 template <typename Function>
 void for_each_exact_neighbor_set(
     const std::vector<LocalParticle>& local,
-    const PeriodicKdTree* tree,
+    const PeriodicKdTree& tree,
     std::size_t begin,
     std::size_t count,
     std::size_t effective_k,
-    core::Real box_size,
     Function&& function) {
     if (count == 0) return;
     if (begin > local.size() || count > local.size() - begin) {
@@ -491,20 +538,14 @@ void for_each_exact_neighbor_set(
     }
 
     const std::size_t available_workers = deblend_worker_count();
-    if (tree == nullptr || available_workers == 1
+    if (available_workers == 1
         || count < minimum_parallel_neighbor_queries) {
         std::vector<Neighbor> selection_scratch;
-        selection_scratch.reserve(
-            tree == nullptr ? local.size() - 1 : effective_k);
+        selection_scratch.reserve(effective_k);
         for (std::size_t offset = 0; offset < count; ++offset) {
             const std::size_t center_index = begin + offset;
-            select_exact_neighbors(
-                local,
-                tree,
-                center_index,
-                effective_k,
-                box_size,
-                selection_scratch);
+            tree.select_exact_neighbors(
+                center_index, effective_k, selection_scratch);
             function(center_index, selection_scratch);
         }
         return;
@@ -527,13 +568,8 @@ void for_each_exact_neighbor_set(
             if (worker_failed.load(std::memory_order_relaxed)) continue;
             try {
                 const std::size_t center_index = begin + offset;
-                select_exact_neighbors(
-                    local,
-                    tree,
-                    center_index,
-                    effective_k,
-                    box_size,
-                    selection_scratch);
+                tree.select_exact_neighbors(
+                    center_index, effective_k, selection_scratch);
                 function(center_index, selection_scratch);
             } catch (...) {
                 worker_failed.store(true, std::memory_order_relaxed);
@@ -616,14 +652,13 @@ DensityPeakDeblender::DensityPeakDeblender(
 
 DensityPeakDeblendExecutionPlan DensityPeakDeblender::execution_plan(
     std::size_t candidate_particle_count) const {
-    if (candidate_particle_count < 2) {
+    if (candidate_particle_count <= options_.k_neighbors) {
         throw std::invalid_argument(
-            "Density peak execution plan requires at least two particles");
+            "Fixed-k density peak execution requires more candidate particles than k_neighbors");
     }
     DensityPeakDeblendExecutionPlan plan;
     plan.particle_count = candidate_particle_count;
-    plan.effective_k_neighbors = std::min(
-        options_.k_neighbors, candidate_particle_count - 1);
+    plan.effective_k_neighbors = options_.k_neighbors;
     plan.maximum_directed_knn_edges = checked_multiply(
         candidate_particle_count,
         plan.effective_k_neighbors,
@@ -664,7 +699,6 @@ DensityPeakDeblendExecutionPlan DensityPeakDeblender::execution_plan(
     add_array_bytes<core::Real>(
         bytes, candidate_particle_count,
         "Density peak density bytes overflow size_t");
-    // ascent_parent, initial_root, peak_roots, merge_parent, retained_roots
     add_array_bytes<std::size_t>(
         bytes,
         checked_multiply(
@@ -674,8 +708,6 @@ DensityPeakDeblendExecutionPlan DensityPeakDeblender::execution_plan(
     add_array_bytes<std::vector<std::size_t>>(
         bytes, candidate_particle_count,
         "Density peak final-members outer bytes overflow size_t");
-    // Final-members payload and result-host membership payload are included
-    // simultaneously to remain conservative across ownership transfer.
     add_array_bytes<std::size_t>(
         bytes,
         checked_multiply(
@@ -700,9 +732,9 @@ DensityPeakDeblendResult DensityPeakDeblender::deblend(
         throw std::invalid_argument(
             "Density peak deblending requires a finite positive box size");
     }
-    if (candidate.particle_indices.size() < 2) {
+    if (candidate.particle_indices.size() <= options_.k_neighbors) {
         throw std::invalid_argument(
-            "Density peak deblending requires at least two candidate particles");
+            "Fixed-k density peak deblending requires more candidate particles than k_neighbors");
     }
     const DensityPeakDeblendExecutionPlan plan = execution_plan(
         candidate.particle_indices.size());
@@ -723,22 +755,25 @@ DensityPeakDeblendResult DensityPeakDeblender::deblend(
 
     std::vector<LocalParticle> local;
     local.reserve(candidate.particle_indices.size());
-    bool all_positions_are_canonical = true;
     for (const std::size_t index : candidate.particle_indices) {
         if (index >= particles.num_owned_particles()) {
             throw std::out_of_range(
                 "Density peak candidate contains a non-owned particle index");
         }
         const core::ParticleId id = particle_ids[index];
-        const core::Vec3 position{
+        const core::Vec3 input_position{
             position_x[index], position_y[index], position_z[index]};
-        if (!std::isfinite(position.x) || !std::isfinite(position.y)
-            || !std::isfinite(position.z)) {
+        if (!std::isfinite(input_position.x) || !std::isfinite(input_position.y)
+            || !std::isfinite(input_position.z)) {
             throw std::invalid_argument(
                 "Density peak candidate contains a non-finite position");
         }
-        all_positions_are_canonical = all_positions_are_canonical
-            && is_canonical_position(position, box_size);
+        const core::Vec3 position = math::wrap(input_position, box_size);
+        if (!std::isfinite(position.x) || !std::isfinite(position.y)
+            || !std::isfinite(position.z)) {
+            throw std::invalid_argument(
+                "Density peak candidate could not be mapped to canonical periodic coordinates");
+        }
         const core::Real mass = particles.mass_at(index);
         if (!std::isfinite(mass) || mass <= 0.0) {
             throw std::invalid_argument(
@@ -763,28 +798,32 @@ DensityPeakDeblendResult DensityPeakDeblender::deblend(
 
     const std::size_t count = local.size();
     const std::size_t effective_k = plan.effective_k_neighbors;
-    std::unique_ptr<PeriodicKdTree> tree;
-    if (all_positions_are_canonical) {
-        tree = std::make_unique<PeriodicKdTree>(local, box_size);
-    }
+    const PeriodicKdTree tree(local, box_size);
     std::vector<core::Real> densities(count, 0.0);
 
-    // Recompute the exact deterministic kNN set for density estimation. The
-    // balanced periodic k-d tree changes only candidate discovery; final distance
-    // and ParticleID tie-breaking remain the brute-force comparison rules.
+    // The fixed-k set is ordered by the exact torus distance of represented
+    // particle coordinates. ParticleID resolves only a true distance tie. The
+    // top-hat density estimator itself is unchanged; its k-th radius is projected
+    // from exact d^2 without first rounding minimum-image components.
     for_each_exact_neighbor_set(
         local,
-        tree.get(),
+        tree,
         0,
         count,
         effective_k,
-        box_size,
         [&](std::size_t i, const std::vector<Neighbor>& neighbors) {
-            const long double radius = neighbors.back().distance;
-            if (!(radius > 0.0L) || !std::isfinite(radius)) {
+            const std::size_t kth = neighbors.back().local_index;
+            if (kth >= local.size()) {
+                throw std::logic_error(
+                    "Density peak k-th neighbor index is outside the candidate");
+            }
+            const auto log_radius = math::minimum_image_distance_log_wrapped(
+                local[i].position, local[kth].position, box_size);
+            if (!log_radius.has_value()) {
                 throw std::invalid_argument(
                     "Density peak k-neighbour radius is singular; coincident particle positions make the estimator undefined");
             }
+
             math::ExactPositiveDoubleSum enclosed_mass_accumulator;
             enclosed_mass_accumulator.add(local[i].mass);
             for (const Neighbor& neighbor : neighbors) {
@@ -795,9 +834,6 @@ DensityPeakDeblendResult DensityPeakDeblender::deblend(
                 enclosed_mass_accumulator.add(
                     local[neighbor.local_index].mass);
             }
-            // Enclosed mass is an intermediate. Two finite particle masses near
-            // the binary64 ceiling can overflow binary64 while mass / r^3 remains
-            // representable; take the logarithm of the exact sum instead.
             const long double log_enclosed_mass =
                 enclosed_mass_accumulator.log_value();
             if (!std::isfinite(log_enclosed_mass)) {
@@ -807,7 +843,7 @@ DensityPeakDeblendResult DensityPeakDeblender::deblend(
             const long double log_density =
                 log_enclosed_mass
                 - std::log((4.0L / 3.0L) * std::numbers::pi_v<long double>)
-                - 3.0L * std::log(radius);
+                - 3.0L * *log_radius;
             const long double minimum_log_density = std::log(
                 static_cast<long double>(
                     std::numeric_limits<core::Real>::denorm_min()));
@@ -831,15 +867,12 @@ DensityPeakDeblendResult DensityPeakDeblender::deblend(
     std::vector<std::size_t> ascent_parent(count);
     std::iota(ascent_parent.begin(), ascent_parent.end(), std::size_t{0});
 
-    // Recompute the same exact kNN set for discrete density ascent. Independent
-    // particle queries are parallel; each writes only its own deterministic row.
     for_each_exact_neighbor_set(
         local,
-        tree.get(),
+        tree,
         0,
         count,
         effective_k,
-        box_size,
         [&](std::size_t i, const std::vector<Neighbor>& neighbors) {
             std::size_t best = i;
             for (const Neighbor& neighbor : neighbors) {
@@ -875,11 +908,6 @@ DensityPeakDeblendResult DensityPeakDeblender::deblend(
     std::iota(merge_parent.begin(), merge_parent.end(), std::size_t{0});
     std::size_t observed_cross_basin_edges = 0;
 
-    // Query exact neighbors in bounded parallel batches, then replay qualifying
-    // directed edges serially in deterministic (particle, neighbor-rank) order.
-    // This preserves the strongest-density/lowest-ParticleID representative
-    // exactly while avoiding both O(N^2) search and retained O(N*k) topology
-    // storage.
     const std::size_t merge_batch_capacity = merge_query_batch_capacity(
         count, effective_k);
     std::vector<std::size_t> qualifying_neighbors(
@@ -897,11 +925,10 @@ DensityPeakDeblendResult DensityPeakDeblender::deblend(
             merge_batch_capacity, count - batch_begin);
         for_each_exact_neighbor_set(
             local,
-            tree.get(),
+            tree,
             batch_begin,
             batch_count,
             effective_k,
-            box_size,
             [&](std::size_t i, const std::vector<Neighbor>& neighbors) {
                 const std::size_t row = i - batch_begin;
                 cross_basin_counts[row] = 0;

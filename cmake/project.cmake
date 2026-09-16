@@ -204,6 +204,8 @@ target_include_directories(hyowon_make_ic PRIVATE
 target_link_libraries(hyowon_make_ic PRIVATE hyowon_core)
 
 if(HYOWON_BUILD_ANALYZER)
+    # Exact intrinsic periodic centers use header-only integer arithmetic.
+    find_path(HYOWON_BOOST_INCLUDE_DIR boost/multiprecision/cpp_int.hpp REQUIRED)
     file(GLOB_RECURSE HYOWON_ANALYSIS_SOURCES CONFIGURE_DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/src/analysis/*.cpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/halo/*.cpp")
@@ -211,6 +213,7 @@ if(HYOWON_BUILD_ANALYZER)
     list(SORT HYOWON_ANALYSIS_SOURCES)
 
     add_library(hyowon_analysis STATIC)
+    target_include_directories(hyowon_analysis SYSTEM PRIVATE "${HYOWON_BOOST_INCLUDE_DIR}")
     target_sources(hyowon_analysis PRIVATE ${HYOWON_ANALYSIS_SOURCES})
     target_compile_options(hyowon_analysis PRIVATE
         $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:GNU,Clang>>:-Wall;-Wextra;-Wpedantic>

@@ -160,10 +160,9 @@ FoFMembershipGridPlan FoFMembershipFinder::grid_plan_for_particle_count(
     const core::Real box_size = config_.get_box().L;
     const core::Real linking_length = linking_length_b_ * config_.d_mean();
     if (!std::isfinite(box_size) || box_size <= 0.0
-        || !std::isfinite(linking_length) || linking_length <= 0.0
-        || linking_length >= box_size) {
+        || !std::isfinite(linking_length) || linking_length <= 0.0) {
         throw std::invalid_argument(
-            "FoF membership linking length must be finite, positive, and smaller than the box");
+            "FoF membership box size and linking length must be finite and positive");
     }
 
     const long double desired_real = std::floor(
@@ -199,7 +198,8 @@ FoFMembershipGridPlan FoFMembershipFinder::grid_plan_for_particle_count(
 
     const core::Real cell_size =
         box_size / static_cast<core::Real>(cells_per_dimension);
-    if (!std::isfinite(cell_size) || cell_size < linking_length) {
+    if (!std::isfinite(cell_size)
+        || (cells_per_dimension > 1 && cell_size < linking_length)) {
         throw std::logic_error(
             "FoF membership grid violates the neighbor-stencil requirement");
     }
@@ -333,15 +333,19 @@ std::vector<FoFMembership> FoFMembershipFinder::find_memberships(
             }
 
             for (std::size_t particle = 0; particle < particle_count; ++particle) {
-                const core::Real x = math::wrap(position_x[particle], box_size);
-                const core::Real y = math::wrap(position_y[particle], box_size);
-                const core::Real z = math::wrap(position_z[particle], box_size);
-                const std::size_t cx = wrapped_axis_cell(x);
-                const std::size_t cy = wrapped_axis_cell(y);
-                const std::size_t cz = wrapped_axis_cell(z);
-                const AxisCellList x_cells = overlapping_axis_cells(x, cx);
-                const AxisCellList y_cells = overlapping_axis_cells(y, cy);
-                const AxisCellList z_cells = overlapping_axis_cells(z, cz);
+                const core::Vec3 wrapped_particle{
+                    math::wrap(position_x[particle], box_size),
+                    math::wrap(position_y[particle], box_size),
+                    math::wrap(position_z[particle], box_size)};
+                const std::size_t cx = wrapped_axis_cell(wrapped_particle.x);
+                const std::size_t cy = wrapped_axis_cell(wrapped_particle.y);
+                const std::size_t cz = wrapped_axis_cell(wrapped_particle.z);
+                const AxisCellList x_cells = overlapping_axis_cells(
+                    wrapped_particle.x, cx);
+                const AxisCellList y_cells = overlapping_axis_cells(
+                    wrapped_particle.y, cy);
+                const AxisCellList z_cells = overlapping_axis_cells(
+                    wrapped_particle.z, cz);
 
                 for (std::size_t xi = 0; xi < x_cells.count; ++xi) {
                     for (std::size_t yi = 0; yi < y_cells.count; ++yi) {
@@ -355,28 +359,21 @@ std::vector<FoFMembership> FoFMembershipFinder::find_memberships(
                                 const std::size_t other_index =
                                     static_cast<std::size_t>(other);
                                 if (other_index > particle) {
-                                    const core::Real dx = math::minimum_image_distance_wrapped(
-                                        x, math::wrap(position_x[other_index], box_size),
-                                        box_size);
-                                    if (std::abs(dx) <= plan.linking_length) {
-                                        const core::Real dy = math::minimum_image_distance_wrapped(
-                                            y, math::wrap(position_y[other_index], box_size),
-                                            box_size);
-                                        if (std::abs(dy) <= plan.linking_length) {
-                                            const core::Real dz = math::minimum_image_distance_wrapped(
-                                                z, math::wrap(position_z[other_index], box_size),
-                                                box_size);
-                                            if (std::abs(dz) <= plan.linking_length
-                                                && core::scale_safe_norm3_leq(
-                                                    dx,
-                                                    dy,
-                                                    dz,
-                                                    plan.linking_length)) {
-                                                disjoint_set.unite(
-                                                    static_cast<DsuIndex>(particle),
-                                                    static_cast<DsuIndex>(other_index));
-                                            }
-                                        }
+                                    const core::Vec3 wrapped_other{
+                                        math::wrap(
+                                            position_x[other_index], box_size),
+                                        math::wrap(
+                                            position_y[other_index], box_size),
+                                        math::wrap(
+                                            position_z[other_index], box_size)};
+                                    if (math::minimum_image_distance_leq_wrapped(
+                                            wrapped_particle,
+                                            wrapped_other,
+                                            box_size,
+                                            plan.linking_length)) {
+                                        disjoint_set.unite(
+                                            static_cast<DsuIndex>(particle),
+                                            static_cast<DsuIndex>(other_index));
                                     }
                                 }
                                 other = next[other_index];

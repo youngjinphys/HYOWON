@@ -1,11 +1,16 @@
 #pragma once
 
 #include "cosmo_nbody/core/types.hpp"
+#include "cosmo_nbody/math/exact_binary64_product_sum.hpp"
 #include <algorithm>
+#include <array>
+#include <cstddef>
+#include <cstdint>
 #include <cfloat>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 namespace cosmo_nbody {
@@ -20,8 +25,8 @@ public:
     }
 
     void build(const std::vector<core::Real>& x, const std::vector<core::Real>& y) {
-        if (x.size() != y.size() || x.size() < 3) {
-            throw std::invalid_argument("CubicSpline requires at least 3 points of equal length.");
+        if (x.size() != y.size() || x.size() < 2) {
+            throw std::invalid_argument("CubicSpline requires at least 2 points of equal length.");
         }
         for (size_t i = 0; i < x.size(); ++i) {
             if (!std::isfinite(x[i]) || !std::isfinite(y[i])) {
@@ -38,7 +43,8 @@ public:
         std::vector<core::Real> new_x(x);
         std::vector<core::Real> new_y(y);
         std::vector<core::Real> new_y2;
-        if (try_build_native(new_x, new_y, new_y2)) {
+        // A two-knot natural spline is a line: retain only the original knots.
+        if (new_x.size() == 2 || try_build_native(new_x, new_y, new_y2)) {
             x_.swap(new_x);
             y_.swap(new_y);
             y2_.swap(new_y2);
@@ -86,6 +92,8 @@ public:
             return y_[static_cast<std::size_t>(exact - x_.begin())];
         }
 
+        if (x_.size() == 2) return interpolate_two_knots(x);
+
         if (normalized_fallback_) {
             return interpolate_normalized(x);
         }
@@ -124,6 +132,117 @@ public:
     }
 
 private:
+    core::Real interpolate_two_knots(core::Real x) const {
+        // Evaluate ((x1-x)*y0 + (x-x0)*y1)/(x1-x0) without rounding
+        // either a normalized coordinate or a cancelling numerator first.
+        // Two finite binary64 factors per term fit the existing exact dyadic
+        // accumulator; even the final subnormal scaling (at most 1074 bits)
+        // stays below bit 8494, within its 10624-bit storage. No wider floating
+        // type, dimensional product, or heap scratch is required.
+        using namespace exact_binary64_product_sum_detail;
+        const auto sum_products = [](auto terms) {
+            Accumulator positive{};
+            Accumulator negative{};
+            for (const auto& [a, b] : terms) {
+                const auto da = decode_binary64(a);
+                const auto db = decode_binary64(b);
+                const auto product = multiply_u64(da.significand, db.significand);
+                std::array<std::uint64_t, product_limbs> words{};
+                words[0] = product.low;
+                words[1] = product.high;
+                add_shifted_product(
+                    da.negative != db.negative ? negative : positive,
+                    words,
+                    static_cast<std::size_t>(
+                        da.exponent + db.exponent - base_exponent));
+            }
+            const bool is_negative = compare(positive, negative) < 0;
+            return std::pair{
+                is_negative ? subtract(negative, positive)
+                            : subtract(positive, negative),
+                is_negative};
+        };
+        const auto [numerator, negative] = sum_products(
+            std::array<std::pair<core::Real, core::Real>, 4>{{
+                {x_[1], y_[0]}, {-x, y_[0]},
+                {x, y_[1]}, {-x_[0], y_[1]}}});
+        const auto denominator = sum_products(
+            std::array<std::pair<core::Real, core::Real>, 2>{{
+                {x_[1], 1.0}, {-x_[0], 1.0}}}).first;
+        // build() has established x1>x0, so this denominator is positive.
+        const auto highest = highest_set_bit(numerator);
+        if (highest == std::numeric_limits<std::size_t>::max()) return 0.0;
+
+        const auto shifted = [](const Accumulator& value, unsigned count) {
+            Accumulator result{};
+            const std::size_t offset = count / 64U;
+            const unsigned bits = count % 64U;
+            for (std::size_t i = 0; i < value.size(); ++i) {
+                if (value[i] == 0U) continue;
+                add_word(result, i + offset, value[i] << bits);
+                if (bits != 0U) {
+                    add_word(result, i + offset + 1U, value[i] >> (64U - bits));
+                }
+            }
+            return result;
+        };
+        int exponent = static_cast<int>(highest)
+            - static_cast<int>(highest_set_bit(denominator));
+        const int ordering = exponent >= 0
+            ? compare(numerator, shifted(denominator, static_cast<unsigned>(exponent)))
+            : compare(shifted(numerator, static_cast<unsigned>(-exponent)), denominator);
+        if (ordering < 0) --exponent;
+        std::uint64_t result_bits = negative ? (std::uint64_t{1} << 63U) : 0U;
+        if (exponent > 1023) {
+            throw std::overflow_error("CubicSpline result is not representable.");
+        }
+        if (exponent < -1075) {
+            return core::portable_bit_cast<core::Real>(result_bits);
+        }
+
+        // Integer long division at the final binary64 quantum. The quotient
+        // needs at most 53 bits; 2*remainder versus divisor implements exact
+        // nearest-even rounding, including the half-min-subnormal boundary.
+        int unit_exponent = std::max(exponent - 52, -1074);
+        Accumulator remainder = unit_exponent < 0
+            ? shifted(numerator, static_cast<unsigned>(-unit_exponent))
+            : numerator;
+        const Accumulator divisor = unit_exponent > 0
+            ? shifted(denominator, static_cast<unsigned>(unit_exponent))
+            : denominator;
+        std::uint64_t significand = 0;
+        const int first_bit = std::min(52,
+            static_cast<int>(highest_set_bit(remainder))
+                - static_cast<int>(highest_set_bit(divisor)));
+        for (int bit_index = first_bit; bit_index >= 0; --bit_index) {
+            const auto multiple = shifted(divisor, static_cast<unsigned>(bit_index));
+            if (compare(remainder, multiple) >= 0) {
+                remainder = subtract(remainder, multiple);
+                significand |= std::uint64_t{1} << bit_index;
+            }
+        }
+        const int halfway = compare(shifted(remainder, 1U), divisor);
+        if (halfway > 0 || (halfway == 0 && (significand & 1U) != 0U)) {
+            ++significand;
+        }
+        if (unit_exponent == -1074 && significand <= (std::uint64_t{1} << 52U)) {
+            // Subnormals and the smallest normal share this integer encoding.
+            result_bits |= significand;
+        } else {
+            if (significand == (std::uint64_t{1} << 53U)) {
+                significand >>= 1U;
+                ++unit_exponent;
+            }
+            const int rounded_exponent = unit_exponent + 52;
+            if (rounded_exponent > 1023) {
+                throw std::overflow_error("CubicSpline result is not representable.");
+            }
+            result_bits |= static_cast<std::uint64_t>(rounded_exponent + 1023) << 52U;
+            result_bits |= significand & ((std::uint64_t{1} << 52U) - 1U);
+        }
+        return core::portable_bit_cast<core::Real>(result_bits);
+    }
+
     static bool try_build_native(
         const std::vector<core::Real>& x,
         const std::vector<core::Real>& y,

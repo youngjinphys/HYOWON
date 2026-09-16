@@ -12,6 +12,9 @@
 #include <span>
 
 namespace cosmo_nbody {
+namespace gravity {
+class PMSolver;
+}
 namespace mesh {
 
 std::uint64_t cic_stable_index_bytes(std::uint64_t particle_count);
@@ -54,10 +57,17 @@ public:
     std::size_t retained_bytes() const noexcept;
 
 private:
+    // PMSolver alone may lend its dead serial/replicated FFT output storage to
+    // one CIC deposit. An empty span ends that loan without releasing owned
+    // reusable scratch.
+    void set_transient_stable_index_storage(
+        std::span<std::byte> storage) noexcept;
+
     struct Impl;
     std::unique_ptr<Impl> impl_;
 
     friend class CICMassAssignment;
+    friend class gravity::PMSolver;
 };
 
 class CICMassAssignment {
@@ -167,7 +177,7 @@ public:
         std::span<core::Real> out_z) const;
 
 private:
-    const MeshGeometry& geom_;
+    MeshGeometry geom_;
     core::Real dx_;
     config::MemoryPolicyParams memory_policy_;
     core::Real deposition_mass_unit_{1.0};

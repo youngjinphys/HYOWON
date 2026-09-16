@@ -3,6 +3,7 @@
 #include "cosmo_nbody/ic/linear_power_spectrum.hpp"
 #include "cosmo_nbody/ic/random_field.hpp"
 #include "cosmo_nbody/ic/lpt_displacement.hpp"
+#include "cosmo_nbody/ic/particle_lattice_bandlimit.hpp"
 #include "cosmo_nbody/io/snapshot_descriptor.hpp"
 #include "cosmo_nbody/io/snapshot_io.hpp"
 #include "cosmo_nbody/io/verified_snapshot_source.hpp"
@@ -233,9 +234,12 @@ void InitialConditions::generate(
         throw std::invalid_argument(
             "Generated ICs require the IC mesh to be an integer multiple of particles_per_dimension");
     }
-    if (config.get_ic().lpt_order == 2 && ic_mesh / 2 < N) {
+    if (config.get_ic().lpt_order == 2
+        && !projected_2lpt_source_mesh_is_alias_free(
+            static_cast<std::uint64_t>(ic_mesh),
+            config.ic_effective_max_mode_per_axis())) {
         throw std::invalid_argument(
-            "Generated 2LPT ICs require ic.mesh_per_dimension >= 2 * particles_per_dimension");
+            "Generated projected 2LPT IC mesh must satisfy M > 3*K so quadratic alias images cannot contaminate the retained |m_i|<=K source band");
     }
 
     ExactFourierEvidence exact_evidence;

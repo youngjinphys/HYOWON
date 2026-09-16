@@ -118,6 +118,22 @@ void run_deblended_host_stage(
     const halo::DensityPeakDeblender deblender(deblend_options);
     const core::Real box_size = so_context.box_size;
 
+    // Fixed k needs k distinct non-self neighbours in each realized candidate.
+    // A configured FoF cutoff above k is sufficient, but is not necessary when
+    // every retained candidate is already large enough. Preflight all candidates
+    // before opening this stage's products; never lower k or silently drop one.
+    for (const auto& candidate : candidates) {
+        if (candidate.particle_indices.size() <= deblend_options.k_neighbors) {
+            throw std::invalid_argument(
+                "Standard-SO fixed-k density peaks require each retained FoF "
+                "candidate to contain more than k particles; candidate "
+                + std::to_string(candidate.id) + " has "
+                + std::to_string(candidate.particle_indices.size())
+                + " particles for k="
+                + std::to_string(deblend_options.k_neighbors));
+        }
+    }
+
     const auto peaks_path = output_directory / "analysis_density_peaks_all.csv";
     const auto hosts_path = output_directory / "analysis_deblended_hosts_all.csv";
     const auto membership_path =
@@ -186,6 +202,10 @@ void run_deblended_host_stage(
 
         const auto deblended = deblender.deblend(
             particles, candidate, box_size);
+        if (deblended.effective_k_neighbors != deblend_options.k_neighbors) {
+            throw std::logic_error(
+                "Standard-SO canonical path changed the declared fixed-k density estimator");
+        }
         for (const auto& peak : deblended.peaks) {
             peaks_output << peak.candidate_id << ',' << peak.peak_particle_id
                          << ',' << peak.peak_particle_index << ','
@@ -279,6 +299,10 @@ void run_deblended_host_stage(
     standard_output
         << "# object_kind=density_peak_centered_standard_spherical_overdensity\n"
         << "# seed_selection=fof_candidates_then_fixed_k_density_peak_deblend_retained_host_minimum_then_named_so\n"
+        << "# catalog_semantics=independent_seeded_so_measurements_not_distinct_host_catalog\n"
+        << "# host_subhalo_classification=not_performed\n"
+        << "# overlapping_so_apertures=allowed\n"
+        << "# so_crossing_policy=first_outward_mean_enclosed_density_crossing\n"
         << "# fof_linking_length_b=" << request.fof_linking_length_b << '\n'
         << "# fof_min_particles=" << request.fof_min_particles << '\n'
         << "# peak_density_k_neighbors="

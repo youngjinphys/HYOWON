@@ -240,7 +240,7 @@ MpiDatatypeHandle make_particle_datatype(
         throw std::overflow_error(
             "MPI particle datatype layout exceeds MPI_Aint range");
     }
-    const auto displacement = [particle_base, maximum_aint](std::size_t field) {
+    const auto displacement = [particle_base](std::size_t field) {
         if (field > maximum_aint
             || particle_base > maximum_aint - field) {
             throw std::overflow_error(
@@ -284,7 +284,7 @@ MpiDatatypeHandle make_ghost_datatype(
         throw std::overflow_error(
             "MPI ghost datatype layout exceeds MPI_Aint range");
     }
-    const auto displacement = [particle_base, maximum_aint](std::size_t field) {
+    const auto displacement = [particle_base](std::size_t field) {
         if (field > maximum_aint
             || particle_base > maximum_aint - field) {
             throw std::overflow_error(

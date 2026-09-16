@@ -47,6 +47,19 @@ bool particle_lattice_mode_representable(
     std::int64_t mode,
     std::size_t particles_per_dimension) noexcept;
 
+// A real-space quadratic product of two fields with Cartesian support |m|<=K
+// has convolution indices p+q.  After transforming back, HYOWON retains only
+// |k|<=K.  An aliased contribution to that retained band would require
+// p+q-k = s*M for nonzero integer s.  Since |p+q-k|<=3K, the strict condition
+// M>3K is sufficient and sharp for the retained projected 2LPT source.  Use a
+// division form so the predicate itself cannot overflow while testing 3*K.
+inline constexpr bool projected_2lpt_source_mesh_is_alias_free(
+    std::uint64_t mesh_per_dimension,
+    std::uint64_t max_mode_per_axis) noexcept {
+    return mesh_per_dimension != 0
+        && max_mode_per_axis <= (mesh_per_dimension - 1U) / 3U;
+}
+
 // Set all non-representable r2c Fourier coefficients to zero.  The field must
 // use a mesh dimension that is an integer multiple of the particle dimension,
 // which is also the LPT sampling rule.

@@ -1,6 +1,7 @@
 #include "cosmo_nbody/config/simulation_parameters.hpp"
 #include "cosmo_nbody/cosmology/flat_matter_lambda.hpp"
 #include "cosmo_nbody/cosmology/units.hpp"
+#include "cosmo_nbody/ic/particle_lattice_bandlimit.hpp"
 #include "cosmo_nbody/io/content_hash.hpp"
 #include "cosmo_nbody/math/scaled_positive_product.hpp"
 #include "cosmo_nbody/time/time_stepper.hpp"
@@ -158,11 +159,18 @@ void SimulationParameters::resolve_and_validate_resolution() {
         if (requested_ic_mesh != 0) {
             derived_ic_mesh = requested_ic_mesh;
         } else if (ic.lpt_order == 2) {
-            if (box.N > std::numeric_limits<std::uint64_t>::max() / 2) {
-                throw std::overflow_error(
-                    "Automatic de-aliased 2LPT IC mesh dimension overflows uint64_t");
+            const std::uint64_t effective_max_mode =
+                ic.max_mode_per_axis.value_or((box.N - 1) / 2);
+            if (cosmo_nbody::ic::projected_2lpt_source_mesh_is_alias_free(
+                    box.N, effective_max_mode)) {
+                derived_ic_mesh = box.N;
+            } else {
+                if (box.N > std::numeric_limits<std::uint64_t>::max() / 2) {
+                    throw std::overflow_error(
+                        "Automatic de-aliased 2LPT IC mesh dimension overflows uint64_t");
+                }
+                derived_ic_mesh = 2 * box.N;
             }
-            derived_ic_mesh = 2 * box.N;
         } else {
             derived_ic_mesh = box.N;
         }
@@ -204,7 +212,7 @@ void SimulationParameters::validate_time() const {
     }
     if (time.z_final < 0.0) {
         throw std::invalid_argument(
-            "Future-time evolution (z_final < 0, a_final > 1) is not supported by the current growth table");
+            "Future-time evolution (z_final < 0, a_final > 1) is outside the maintained simulation scope");
     }
     if (time.z_start <= time.z_final) {
         throw std::invalid_argument("z_start must be greater than z_final");
@@ -236,8 +244,8 @@ void SimulationParameters::validate_gravity() {
                 "TreePM softening_comoving_Mpc_h must be finite and positive");
         }
         gravity.deconvolve_cic = true;
-        if (!std::isfinite(gravity.theta) || gravity.theta <= 0.0) {
-            throw std::invalid_argument("theta must be finite and positive");
+        if (!std::isfinite(gravity.theta) || gravity.theta < 0.0) {
+            throw std::invalid_argument("theta must be finite and non-negative");
         }
         if (!std::isfinite(gravity.split_scale_cells)
             || gravity.split_scale_cells <= 0.0) {
@@ -274,6 +282,12 @@ void SimulationParameters::validate_initial_conditions() {
             throw std::invalid_argument(
                 "ic.max_mode_per_axis must be positive and satisfy 2*K < particles_per_dimension");
         }
+        const std::uint64_t effective_max_mode =
+            ic_effective_max_mode_per_axis();
+        if (effective_max_mode == 0) {
+            throw std::invalid_argument(
+                "Generated IC particle lattice must admit at least one nonzero Fourier mode");
+        }
         if (ic.lpt_order != 1 && ic.lpt_order != 2) {
             throw std::invalid_argument("ic.lpt_order must be 1 or 2");
         }
@@ -295,9 +309,11 @@ void SimulationParameters::validate_initial_conditions() {
             throw std::invalid_argument(
                 "Generated IC mesh must be an integer multiple of particles_per_dimension");
         }
-        if (ic.lpt_order == 2 && derived_ic_mesh / 2 < box.N) {
+        if (ic.lpt_order == 2
+            && !cosmo_nbody::ic::projected_2lpt_source_mesh_is_alias_free(
+                derived_ic_mesh, effective_max_mode)) {
             throw std::invalid_argument(
-                "Generated 2LPT ICs require ic.mesh_per_dimension >= 2 * particles_per_dimension");
+                "Generated projected 2LPT IC mesh must satisfy M > 3*K so quadratic alias images cannot contaminate the retained |m_i|<=K source band");
         }
         if (ic.amplitude_mode != "gaussian" && ic.amplitude_mode != "fixed") {
             throw std::invalid_argument("ic.amplitude_mode must be 'gaussian' or 'fixed'");
@@ -411,10 +427,6 @@ void SimulationParameters::derive_physical_scales() {
         }
         derived_r_s = gravity.split_scale_cells * dx;
         require_finite_positive(derived_r_s, "r_s");
-        if (!(derived_r_s < box.L)) {
-            throw std::overflow_error(
-                "TreePM split scale r_s must be smaller than the box size");
-        }
         if (derived_r_s
             > std::numeric_limits<core::Real>::max()
                 / gravity.cutoff_multiplier) {

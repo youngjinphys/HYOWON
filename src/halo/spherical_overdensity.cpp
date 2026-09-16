@@ -28,7 +28,11 @@ namespace halo {
 
 namespace {
 
-using RadiusRecord = PeriodicNeighbor;
+struct RadiusRecord {
+    core::Vec3 wrapped_position;
+    core::detail::ExactBinary64PositiveDyadic squared_distance_key;
+    std::size_t particle_index{0};
+};
 
 constexpr std::size_t BYTES_PER_GIB = std::size_t{1} << 30;
 constexpr std::uint8_t SO_FAILURE_NONE = 0;
@@ -270,7 +274,7 @@ SOExecutionPlan SphericalOverdensityFinder::execution_plan(
 
     plan.candidate_bytes_per_worker = checked_multiply(
         particle_count,
-        sizeof(RadiusRecord),
+        sizeof(RadiusRecord) + sizeof(PeriodicNeighbor),
         "SO exact candidate storage overflows size_t");
     plan.center_staging_bytes = checked_add(
         checked_multiply(
@@ -524,9 +528,6 @@ SphericalOverdensityFinder::find_halos_with_resolved_density(
             "SO maximum periodic aperture is invalid");
     }
     (void)total_owned_mass(particles);
-    const auto target_density = detail::so_target_density(
-        effective_overdensity,
-        reference_density);
 
     const auto x = particles.get_positions_x().first(n);
     const auto y = particles.get_positions_y().first(n);
@@ -580,19 +581,75 @@ SphericalOverdensityFinder::find_halos_with_resolved_density(
          center_index < centers.size();
          ++center_index) {
         const core::Vec3 center = math::wrap(centers[center_index], L);
-        const core::Real tolerance =
-            64.0 * std::numeric_limits<core::Real>::epsilon() * L;
         core::Real query_radius = std::min(
             max_radius,
             neighbor_index.cell_width());
         std::vector<RadiusRecord> radii;
+        std::vector<PeriodicNeighbor> collected;
+
+        const auto wrapped_position = [&](std::size_t particle_index) {
+            return math::wrap(core::Vec3{
+                x[particle_index],
+                y[particle_index],
+                z[particle_index]}, L);
+        };
+        const auto compare_radius_records = [&](const RadiusRecord& lhs,
+                                                const RadiusRecord& rhs) {
+            const int key_relation = math::minimum_image_squared_distance_keys_compare(
+                lhs.squared_distance_key, rhs.squared_distance_key);
+            if (key_relation != 0) return key_relation < 0;
+            const int relation = math::minimum_image_distances_compare_wrapped(
+                center,
+                lhs.wrapped_position,
+                rhs.wrapped_position,
+                L);
+            if (relation != 0) return relation < 0;
+            return lhs.particle_index < rhs.particle_index;
+        };
+        const auto same_exact_shell = [&](const RadiusRecord& lhs,
+                                          const RadiusRecord& rhs) {
+            if (math::minimum_image_squared_distance_keys_compare(
+                    lhs.squared_distance_key, rhs.squared_distance_key) != 0) return false;
+            return math::minimum_image_distances_compare_wrapped(
+                center,
+                lhs.wrapped_position,
+                rhs.wrapped_position,
+                L) == 0;
+        };
+        const auto exact_distance_to_radius = [&](const RadiusRecord& record,
+                                                  core::Real radius) {
+            return math::minimum_image_distance_to_radius_compare_wrapped(
+                center,
+                record.wrapped_position,
+                L,
+                radius);
+        };
 
         while (true) {
             try {
                 neighbor_index.collect_within(
                     center,
                     query_radius,
-                    radii);
+                    collected);
+                if (radii.capacity() < collected.size()) {
+                    // Match the collection buffer's growth rule: release the
+                    // old allocation before reserve, so adaptive enlargement
+                    // obeys the execution plan's two-buffer peak.
+                    std::vector<RadiusRecord>{}.swap(radii);
+                    radii.reserve(collected.size());
+                } else {
+                    radii.clear();
+                }
+                for (const auto& neighbor : collected) {
+                    const auto position = wrapped_position(neighbor.particle_index);
+                    radii.push_back({position,
+                        math::minimum_image_squared_distance_key_wrapped(center, position, L),
+                        neighbor.particle_index});
+                }
+                std::sort(
+                    radii.begin(),
+                    radii.end(),
+                    compare_radius_records);
             } catch (const std::bad_alloc&) {
                 center_failure[center_index] = SO_FAILURE_ALLOCATION;
                 break;
@@ -601,18 +658,8 @@ SphericalOverdensityFinder::find_halos_with_resolved_density(
                 break;
             }
 
-            std::sort(
-                radii.begin(),
-                radii.end(),
-                [](const RadiusRecord& lhs, const RadiusRecord& rhs) {
-                    if (lhs.radius != rhs.radius) {
-                        return lhs.radius < rhs.radius;
-                    }
-                    return lhs.particle_index < rhs.particle_index;
-                });
-
             if (radii.empty()) {
-                if (query_radius >= max_radius - tolerance) break;
+                if (query_radius >= max_radius) break;
                 const core::Real expanded = std::min(
                     max_radius,
                     std::max(
@@ -630,31 +677,35 @@ SphericalOverdensityFinder::find_halos_with_resolved_density(
             math::ExactPositiveDoubleSum enclosed_mass_accumulator;
             core::Real enclosed_mass = 0.0;
             std::size_t enclosed_count = 0;
-            core::Real last_above_radius = 0.0;
             core::Real last_above_mass = 0.0;
             std::size_t last_above_count = 0;
+            core::Real last_above_crossing = 0.0;
             bool found_above = false;
             bool found_first_below = false;
 
             std::size_t shell_begin = 0;
             while (shell_begin < radii.size()) {
-                const core::Real shell_radius = radii[shell_begin].radius;
-                std::size_t shell_end = shell_begin;
+                std::size_t shell_end = shell_begin + 1;
                 try {
                     while (shell_end < radii.size()
-                           && radii[shell_end].radius == shell_radius) {
+                           && same_exact_shell(
+                               radii[shell_begin], radii[shell_end])) {
+                        ++shell_end;
+                    }
+                    for (std::size_t shell_member = shell_begin;
+                         shell_member < shell_end;
+                         ++shell_member) {
                         add_positive_particle_mass(
                             enclosed_mass_accumulator,
                             particle_mass_at(
                                 particles,
-                                radii[shell_end].particle_index));
+                                radii[shell_member].particle_index));
                         if (enclosed_count
                             == std::numeric_limits<std::size_t>::max()) {
                             throw std::overflow_error(
                                 "SO enclosed particle count overflows size_t");
                         }
                         ++enclosed_count;
-                        ++shell_end;
                     }
                     enclosed_mass = require_positive_exact_mass(
                         enclosed_mass_accumulator);
@@ -663,83 +714,57 @@ SphericalOverdensityFinder::find_halos_with_resolved_density(
                     break;
                 }
 
-                bool above_target = shell_radius == 0.0;
-                if (!above_target) {
-                    const auto density = detail::so_scaled_density_at_radius(
-                        enclosed_mass,
-                        shell_radius);
-                    if (!density.has_value()) {
-                        center_failure[center_index] = SO_FAILURE_NUMERICAL;
-                        break;
-                    }
-                    const auto relation = detail::so_density_at_or_above_target(
-                        *density,
-                        target_density);
-                    if (!relation.has_value()) {
-                        center_failure[center_index] = SO_FAILURE_NUMERICAL;
-                        break;
-                    }
-                    above_target = *relation;
+                const auto crossing = detail::so_crossing_radius(
+                    enclosed_mass,
+                    effective_overdensity,
+                    reference_density);
+                if (!crossing.has_value()) {
+                    center_failure[center_index] = SO_FAILURE_NUMERICAL;
+                    break;
                 }
 
-                if (above_target) {
-                    found_above = true;
-                    last_above_radius = shell_radius;
-                    last_above_mass = enclosed_mass;
-                    last_above_count = enclosed_count;
-                    if (shell_end < radii.size()) {
-                        const core::Real next_shell_radius =
-                            radii[shell_end].radius;
-                        if (!std::isfinite(next_shell_radius)
-                            || !(next_shell_radius > shell_radius)) {
-                            center_failure[center_index] =
-                                SO_FAILURE_NUMERICAL;
-                            break;
-                        }
-                        const auto pre_shell_density =
-                            detail::so_scaled_density_at_radius(
-                                enclosed_mass, next_shell_radius);
-                        if (!pre_shell_density.has_value()) {
-                            center_failure[center_index] =
-                                SO_FAILURE_NUMERICAL;
-                            break;
-                        }
-                        const auto pre_shell_relation =
-                            detail::so_density_at_or_above_target(
-                                *pre_shell_density, target_density);
-                        if (!pre_shell_relation.has_value()) {
-                            center_failure[center_index] =
-                                SO_FAILURE_NUMERICAL;
-                            break;
-                        }
-                        if (!*pre_shell_relation) {
+                bool above_target = std::isinf(*crossing);
+                if (!above_target) {
+                    try {
+                        above_target = exact_distance_to_radius(
+                            radii[shell_begin], *crossing) <= 0;
+                    } catch (...) {
+                        center_failure[center_index] = SO_FAILURE_NUMERICAL;
+                        break;
+                    }
+                }
+
+                if (!above_target) {
+                    found_first_below = true;
+                    break;
+                }
+
+                found_above = true;
+                last_above_mass = enclosed_mass;
+                last_above_count = enclosed_count;
+                last_above_crossing = *crossing;
+
+                if (shell_end < radii.size()
+                    && std::isfinite(last_above_crossing)) {
+                    try {
+                        if (exact_distance_to_radius(
+                                radii[shell_end],
+                                last_above_crossing) > 0) {
                             found_first_below = true;
                             break;
                         }
+                    } catch (...) {
+                        center_failure[center_index] = SO_FAILURE_NUMERICAL;
+                        break;
                     }
-                } else {
-                    found_first_below = true;
-                    break;
                 }
                 shell_begin = shell_end;
             }
             if (center_failure[center_index] != SO_FAILURE_NONE) break;
             if (!found_above) break;
 
-            const auto crossing = detail::so_crossing_radius(
-                last_above_mass,
-                effective_overdensity,
-                reference_density);
-            if (!crossing.has_value()
-                || *crossing + tolerance < last_above_radius) {
-                center_failure[center_index] = SO_FAILURE_NUMERICAL;
-                break;
-            }
-
-            const bool resolved = found_first_below
-                || *crossing <= query_radius + tolerance;
-            if (!resolved) {
-                if (query_radius >= max_radius - tolerance) break;
+            if (!std::isfinite(last_above_crossing)) {
+                if (query_radius >= max_radius) break;
                 const core::Real expanded = std::min(
                     max_radius,
                     std::max(
@@ -753,12 +778,30 @@ SphericalOverdensityFinder::find_halos_with_resolved_density(
                 query_radius = expanded;
                 continue;
             }
-            if (*crossing > max_radius + tolerance) break;
+
+            const bool resolved = found_first_below
+                || last_above_crossing <= query_radius;
+            if (!resolved) {
+                if (query_radius >= max_radius) break;
+                const core::Real expanded = std::min(
+                    max_radius,
+                    std::max(
+                        2.0 * query_radius,
+                        query_radius + neighbor_index.cell_width()));
+                if (!std::isfinite(expanded)
+                    || expanded <= query_radius) {
+                    center_failure[center_index] = SO_FAILURE_NUMERICAL;
+                    break;
+                }
+                query_radius = expanded;
+                continue;
+            }
+            if (last_above_crossing > max_radius) break;
 
             SOHalo halo{};
             halo.id = center_index;
             halo.center = center;
-            halo.radius = std::min(*crossing, max_radius);
+            halo.radius = last_above_crossing;
             halo.mass = last_above_mass;
             halo.particle_count = last_above_count;
             halo.overdensity_threshold = effective_overdensity;

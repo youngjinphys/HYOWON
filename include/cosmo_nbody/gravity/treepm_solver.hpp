@@ -71,7 +71,10 @@ public:
 private:
     ForceSplitKernel split_;
     std::unique_ptr<PMSolver> pm_solver_;
-    const config::SimulationParameters& config_;
+    // Numerical configuration is immutable after construction. Own a value so
+    // the solver does not depend on the caller object's lifetime; run-local
+    // snapshot provenance remains shared by SimulationParameters copies.
+    config::SimulationParameters config_;
     core::Real theta_;
 
     Octree tree_;

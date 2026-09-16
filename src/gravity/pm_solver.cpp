@@ -22,6 +22,7 @@
 #include <stdexcept>
 #include <string>
 #include <type_traits>
+#include <vector>
 
 #ifdef COSMO_NBODY_HAS_MPI
 #include <mpi.h>
@@ -135,14 +136,45 @@ core::Real exact_nonnegative_mesh_mass(
         throw std::logic_error(
             "PMSolver logical mesh exceeds deposited storage");
     }
-    math::ExactPositiveDoubleSum sum;
-    for (std::size_t index = 0; index < logical_size; ++index) {
-        const core::Real value = field[index];
-        if (!std::isfinite(value) || value < 0.0) {
-            throw std::runtime_error(
-                "PMSolver deposited mesh contains a non-finite or negative mass");
+
+    const std::size_t worker_count =
+        runtime::host_parallel_worker_capacity(logical_size);
+    const std::size_t block_size = logical_size / worker_count;
+    const std::size_t remainder = logical_size % worker_count;
+    std::vector<math::ExactPositiveDoubleSum> partial_sums(worker_count);
+    std::vector<std::exception_ptr> partial_exceptions(worker_count);
+
+#ifdef COSMO_NBODY_HAS_OPENMP
+    #pragma omp parallel for schedule(static) \
+        if(runtime::should_use_host_parallel_team(worker_count))
+#endif
+    for (std::size_t worker = 0; worker < worker_count; ++worker) {
+        try {
+            const std::size_t count =
+                block_size + (worker < remainder ? 1U : 0U);
+            const std::size_t begin =
+                worker * block_size + std::min(worker, remainder);
+            auto& local_sum = partial_sums[worker];
+            for (std::size_t offset = 0; offset < count; ++offset) {
+                const core::Real value = field[begin + offset];
+                if (!std::isfinite(value) || value < 0.0) {
+                    throw std::runtime_error(
+                        "PMSolver deposited mesh contains a non-finite or negative mass");
+                }
+                local_sum.add(value);
+            }
+        } catch (...) {
+            partial_exceptions[worker] = std::current_exception();
         }
-        sum.add(value);
+    }
+
+    for (const auto& exception : partial_exceptions) {
+        if (exception) std::rethrow_exception(exception);
+    }
+
+    math::ExactPositiveDoubleSum sum;
+    for (const auto& partial_sum : partial_sums) {
+        sum.combine(partial_sum);
     }
     return sum.value();
 }
@@ -602,6 +634,17 @@ std::optional<PMForceDiagnostics> PMSolver::compute_forces_in_place(
     auto& modes = *complex_buf_;
     const std::size_t N = geom_.grid_size();
     const core::Real dx = geom_.cell_size();
+
+    // The serial/replicated complex field has no live numerical value before
+    // deposition, and the subsequent forward FFT overwrites its full extent.
+    // Lend that dead object representation only for this CIC call. The workspace
+    // clears both its pending and active non-owning views on every deposit exit;
+    // insufficient capacity falls back to its existing owned scratch.
+    if (deposition_workspace) {
+        deposition_workspace->set_transient_stable_index_storage(
+            std::as_writable_bytes(std::span{
+                modes.data(), modes.size()}));
+    }
 
     std::exception_ptr deposit_exception;
     try {

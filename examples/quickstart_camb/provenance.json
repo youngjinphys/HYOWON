@@ -1,0 +1,23 @@
+{
+  "record_kind": "camb_spectrum_generation",
+  "camb_version": "2.0.4",
+  "python_version": "3.13.12",
+  "numpy_version": "2.5.3",
+  "sigma8_z0": 0.7999999999999998,
+  "A_s": 1.9120216328315313e-09,
+  "camblib_sha256": "306640a8948cd5246fc9b21e76525f6adebdff5ba3bc792a57d50bba67225ad5",
+  "actual_transfer_support_h_Mpc": [
+    5.192585496217895e-06,
+    57.496333698012386
+  ],
+  "transfer_kmax_Mpc_inverse": 40,
+  "requested_kmax_h_Mpc_inverse": 50,
+  "hyowon_target_omega_lambda": 0.7,
+  "camb_omega_lambda": 0.6999146412354531,
+  "table_sha256": "df78d7d7bee97eb2e6fea47b7162e3da1cf7384376c516940ff7fb5fab655ec3",
+  "parameters_sha256": "7dfd92f6d34ecbe9ef642c0816820f39d9f1ac17aaa8098bf3d2fd5e54048691",
+  "non_claims": [
+    "Not a converged cosmological simulation specification",
+    "Not validation of radiation, gauge, or backscaling projection"
+  ]
+}

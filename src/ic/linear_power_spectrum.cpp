@@ -502,9 +502,9 @@ LinearPowerSpectrum::LinearPowerSpectrum(
 
     validate_semantic_bindings(semantic_bindings, config, filepath);
 
-    if (log_k.size() < 3) {
+    if (log_k.size() < 2) {
         throw std::runtime_error(
-            "Power spectrum table must have at least 3 valid positive entries");
+            "Power spectrum table must have at least 2 valid positive entries");
     }
     for (std::size_t idx = 1; idx < log_k.size(); ++idx) {
         if (!(log_k[idx] > log_k[idx - 1])) {

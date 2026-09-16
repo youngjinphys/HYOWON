@@ -11,8 +11,8 @@ std::string_view halo_center_kind_name(HaloCenterKind kind) noexcept {
     switch (kind) {
         case HaloCenterKind::Unknown:
             return "unknown_center_kind";
-        case HaloCenterKind::PeriodicMassWeightedCircularCOM:
-            return "periodic_mass_weighted_circular_com";
+        case HaloCenterKind::PeriodicIntrinsicMassWeightedCOM:
+            return "periodic_intrinsic_mass_weighted_com";
         case HaloCenterKind::DensityPeakParticle:
             return "density_peak_particle";
     }
@@ -48,8 +48,6 @@ std::string_view halo_membership_view_name(HaloMembershipView view) noexcept {
             return "deblended_density_basin_all";
         case HaloMembershipView::GeometricSOAll:
             return "geometric_so_all";
-        case HaloMembershipView::BoundHostExcludingSubstructure:
-            return "bound_host_excluding_substructure";
     }
     return "unknown_membership_view";
 }
@@ -136,10 +134,6 @@ void validate_halo_definition(
 
     if (membership.view == HaloMembershipView::Unknown) {
         throw std::invalid_argument("Halo membership view must be explicit");
-    }
-    if (membership.view == HaloMembershipView::BoundHostExcludingSubstructure
-        && !membership.available) {
-        return;
     }
     if (!membership.available) {
         throw std::invalid_argument("Requested halo membership view is unavailable");

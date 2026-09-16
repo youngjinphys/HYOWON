@@ -362,17 +362,22 @@ void append_identity_field(std::string& target, std::string_view value) {
     target.push_back('\0');
 }
 
+#if defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))
 std::string hexadecimal_u32(std::uint32_t value) {
     std::ostringstream output;
     output << std::hex << std::setfill('0') << std::setw(8) << value;
     return output.str();
 }
+#endif
 
+#if (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))) \
+    || (defined(__linux__) && defined(__aarch64__))
 std::string hexadecimal_u64(std::uint64_t value) {
     std::ostringstream output;
     output << std::hex << std::setfill('0') << std::setw(16) << value;
     return output.str();
 }
+#endif
 
 #if defined(__APPLE__)
 std::string optional_sysctl_text(const char* name) {

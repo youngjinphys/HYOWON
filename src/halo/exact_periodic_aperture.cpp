@@ -1,10 +1,6 @@
 #include "cosmo_nbody/halo/exact_periodic_aperture.hpp"
 
-#include "cosmo_nbody/math/periodic_box.hpp"
-
-#include <algorithm>
 #include <cmath>
-#include <limits>
 #include <stdexcept>
 
 namespace cosmo_nbody::halo {
@@ -34,76 +30,12 @@ void collect_validated_exact_periodic_aperture(
             "Validated exact periodic aperture query observed particle-count mutation");
     }
 
-    const std::size_t count = particles.num_owned_particles();
-    const auto x = particles.get_positions_x().first(count);
-    const auto y = particles.get_positions_y().first(count);
-    const auto z = particles.get_positions_z().first(count);
-    const auto exact_neighbor = [&, radius](
-        std::size_t particle_index,
-        PeriodicNeighbor& neighbor) {
-        const core::Vec3 displacement = math::minimum_image_displacement(
-            center,
-            core::Vec3{x[particle_index], y[particle_index], z[particle_index]},
-            box_size);
-        const core::Real distance = displacement.norm();
-        if (!std::isfinite(distance)) {
-            throw std::runtime_error(
-                "Exact periodic aperture encountered invalid periodic geometry");
-        }
-        if (distance > radius
-            || !core::scale_safe_norm3_leq(
-                displacement.x,
-                displacement.y,
-                displacement.z,
-                radius)) {
-            return false;
-        }
-        neighbor = {distance, particle_index};
-        return true;
-    };
-
-    const core::Real maximum_radius = 0.5 * box_size;
-    const core::Real guard =
-        64.0 * std::numeric_limits<core::Real>::epsilon()
-        * std::max(box_size, radius);
-    const core::Real guarded_query_radius = std::nextafter(
-        radius + guard, std::numeric_limits<core::Real>::infinity());
-
-    // Candidate generation is deliberately conservative so cell-edge rounding
-    // cannot hide a point that the precise radius predicate admits. At L/2 the
-    // guard cannot be enlarged without leaving the unique minimum-image domain,
-    // so use one full scan and apply the same central comparison rule.
-    if (!(guarded_query_radius < maximum_radius)) {
-        if (output.capacity() < count) {
-            std::vector<PeriodicNeighbor>{}.swap(output);
-            output.reserve(count);
-        } else {
-            output.clear();
-        }
-        for (std::size_t particle_index = 0;
-             particle_index < count;
-             ++particle_index) {
-            PeriodicNeighbor neighbor;
-            if (exact_neighbor(particle_index, neighbor)) {
-                output.push_back(neighbor);
-            }
-        }
-        return;
-    }
-
-    index.collect_within(center, guarded_query_radius, output);
-    std::size_t accepted = 0;
-    for (const auto& candidate : output) {
-        if (candidate.particle_index >= count) {
-            throw std::logic_error(
-                "Exact periodic aperture index returned a non-owned particle");
-        }
-        PeriodicNeighbor neighbor;
-        if (exact_neighbor(candidate.particle_index, neighbor)) {
-            output[accepted++] = neighbor;
-        }
-    }
-    output.resize(accepted);
+    // PeriodicNeighborIndex traverses a conservative candidate-cell superset and
+    // decides the closed boundary from the exact mathematical torus squared
+    // distance of represented canonical binary64 endpoints. The cached rounded
+    // displacement norm is descriptive only. No empirical epsilon expansion is
+    // part of the aperture definition.
+    index.collect_within(center, radius, output);
 }
 
 } // namespace

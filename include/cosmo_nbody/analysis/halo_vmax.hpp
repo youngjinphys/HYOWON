@@ -17,6 +17,8 @@ struct VmaxResult {
 
 VmaxResult compute_vmax(
     const core::ParticleStore& particles,
+    core::Vec3 center,
+    core::Real box_size,
     std::vector<halo::PeriodicNeighbor>& members,
     core::Real scale_factor);
 

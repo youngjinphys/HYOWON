@@ -81,8 +81,8 @@ TidalWebField FilamentStatistics::build_tidal_web_field(
     const PeriodicDomain& domain,
     const core::ParticleStore& particles,
     const TidalWebOptions& options) {
-    if (options.mesh_size < 4) {
-        throw std::invalid_argument("T-web mesh_size must be >= 4");
+    if (options.mesh_size < 2) {
+        throw std::invalid_argument("T-web mesh_size must be >= 2");
     }
     if (!std::isfinite(options.gaussian_smoothing_radius)
         || options.gaussian_smoothing_radius < 0.0) {

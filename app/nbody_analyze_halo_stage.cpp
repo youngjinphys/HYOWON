@@ -236,7 +236,7 @@ HaloStageResult run_halo_stage(
                << request.fof_linking_length_b << '\n'
                << "# fof_min_particles=" << request.fof_min_particles << '\n'
                << "# estimator=fixed_fof_membership_shape_tensor\n"
-               << "# center=fof_candidate_circular_mass_weighted_com\n"
+               << "# center=fof_candidate_periodic_intrinsic_mass_weighted_com\n"
                << "# aperture=fixed_fof_candidate_all_membership\n"
                << "# membership_reselection=false\n"
                << "# substructure_removal=false\n"

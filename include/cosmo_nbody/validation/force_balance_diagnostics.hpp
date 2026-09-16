@@ -1,4 +1,4 @@
-// Numerically stable force-balance diagnostic for simulation validation.
+// Numerically stable force-balance diagnostic for validation campaigns.
 #pragma once
 
 #include "cosmo_nbody/core/types.hpp"

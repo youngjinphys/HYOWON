@@ -232,23 +232,33 @@ void PeriodicNeighborIndex::append_cell_neighbors(
     const auto y = particles_->get_positions_y().first(owned);
     const auto z = particles_->get_positions_z().first(owned);
     const auto append = [&](std::size_t particle) {
+        const core::Vec3 wrapped_particle{
+            math::wrap(x[particle], box_size_),
+            math::wrap(y[particle], box_size_),
+            math::wrap(z[particle], box_size_)};
+        if (!std::isfinite(wrapped_particle.x)
+            || !std::isfinite(wrapped_particle.y)
+            || !std::isfinite(wrapped_particle.z)) {
+            throw std::runtime_error(
+                "Periodic neighbor particle position is non-finite");
+        }
+
+        // Decide closed membership from the exact mathematical torus distance
+        // of the represented canonical endpoints. A rounded minimum-image
+        // component is not a valid boundary predicate near the half-box cut.
+        if (!math::minimum_image_distance_leq_wrapped(
+                wrapped_center, wrapped_particle, box_size_, radius)) {
+            return;
+        }
+
         const core::Vec3 displacement = math::minimum_image_displacement(
-            wrapped_center,
-            core::Vec3{x[particle], y[particle], z[particle]},
-            box_size_);
+            wrapped_center, wrapped_particle, box_size_);
         const core::Real distance = displacement.norm();
         if (!std::isfinite(distance)) {
             throw std::runtime_error(
                 "Periodic neighbor distance is non-finite");
         }
-        if (distance <= radius
-            && core::scale_safe_norm3_leq(
-                displacement.x,
-                displacement.y,
-                displacement.z,
-                radius)) {
-            output.push_back(PeriodicNeighbor{distance, particle});
-        }
+        output.push_back(PeriodicNeighbor{distance, particle});
     };
 
     if (plan_.compact_indices) {
@@ -286,15 +296,10 @@ void PeriodicNeighborIndex::collect_within(
         output.clear();
         return;
     }
-    const core::Real maximum_radius = 0.5 * box_size_;
-    const core::Real tolerance =
-        64.0 * std::numeric_limits<core::Real>::epsilon() * box_size_;
-    if (!std::isfinite(radius) || radius < 0.0
-        || radius > maximum_radius + tolerance) {
+    if (!std::isfinite(radius) || radius < 0.0) {
         throw std::invalid_argument(
-            "Periodic neighbor query radius must lie in [0,L/2]");
+            "Periodic neighbor query radius must be finite and non-negative");
     }
-    radius = std::min(radius, maximum_radius);
     const core::Vec3 wrapped_center = math::wrap(center, box_size_);
     if (!std::isfinite(wrapped_center.x) || !std::isfinite(wrapped_center.y)
         || !std::isfinite(wrapped_center.z)) {
@@ -302,7 +307,22 @@ void PeriodicNeighborIndex::collect_within(
             "Periodic neighbor query center must be finite");
     }
 
+    const auto all_axis_cells = [&]() {
+        std::vector<std::size_t> cells(plan_.cells_per_dimension);
+        for (std::size_t index = 0; index < cells.size(); ++index) {
+            cells[index] = index;
+        }
+        return cells;
+    };
+
     const auto axis_cells = [&](core::Real coordinate) {
+        // Bound candidate traversal, not the requested geometric radius: a
+        // rounded torus diameter can be smaller than an actual corner distance.
+        // Each periodic axis is fully covered at L/2; handle that case before
+        // radius/cell_width_ can overflow for a large finite query radius.
+        if (radius >= core::Real{0.5} * box_size_) {
+            return all_axis_cells();
+        }
         const core::Real raw_center = std::floor(coordinate / cell_width_);
         if (!std::isfinite(raw_center) || raw_center < 0.0) {
             throw std::runtime_error(
@@ -319,14 +339,10 @@ void PeriodicNeighborIndex::collect_within(
                 "Periodic neighbor query cell reach is invalid");
         }
         const std::size_t reach = static_cast<std::size_t>(reach_real);
-        std::vector<std::size_t> cells;
         if (reach >= plan_.cells_per_dimension / 2) {
-            cells.resize(plan_.cells_per_dimension);
-            for (std::size_t index = 0; index < cells.size(); ++index) {
-                cells[index] = index;
-            }
-            return cells;
+            return all_axis_cells();
         }
+        std::vector<std::size_t> cells;
         cells.reserve(2 * reach + 1);
         const long long signed_center = static_cast<long long>(center_cell);
         const long long signed_reach = static_cast<long long>(reach);

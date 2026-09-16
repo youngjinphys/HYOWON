@@ -102,6 +102,8 @@ bool offset_mac_accepts(
         return false;
     }
 
+    // theta=0 reaches the early return above: open every non-pruned internal
+    // node without dividing by zero or substituting a finite opening angle.
     const core::Real offset_x = absolute_difference_upper(
         center_of_mass.x, geometric_center.x);
     const core::Real offset_y = absolute_difference_upper(
@@ -166,9 +168,9 @@ TreeWalkResult TreeWalk::compute_force_with_diagnostics(
     std::size_t target_idx,
     core::Real theta,
     TreeWalkScratch& scratch) const {
-    if (!std::isfinite(theta) || theta <= 0.0) {
+    if (!std::isfinite(theta) || theta < 0.0) {
         throw std::invalid_argument(
-            "TreeWalk opening angle theta must be finite and positive");
+            "TreeWalk opening angle theta must be finite and non-negative");
     }
     if (target_idx >= particles_.num_owned_particles()) {
         throw std::out_of_range(
@@ -203,9 +205,9 @@ TreeWalkResult TreeWalk::compute_force_impl(
     std::size_t self_index,
     core::Real theta,
     TreeWalkScratch& scratch) const {
-    if (!std::isfinite(theta) || theta <= 0.0) {
+    if (!std::isfinite(theta) || theta < 0.0) {
         throw std::invalid_argument(
-            "TreeWalk opening angle theta must be finite and positive");
+            "TreeWalk opening angle theta must be finite and non-negative");
     }
     if (!std::isfinite(target_pos.x)
         || !std::isfinite(target_pos.y)

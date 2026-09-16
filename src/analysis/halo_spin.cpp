@@ -326,6 +326,13 @@ SpinResult HaloSpin::compute_members(
     const auto py = particles.get_momenta_y().first(owned);
     const auto pz = particles.get_momenta_z().first(owned);
     const auto ids = particles.get_ids().first(owned);
+    const core::Vec3 wrapped_center = math::wrap(center, box_size);
+    if (!std::isfinite(wrapped_center.x)
+        || !std::isfinite(wrapped_center.y)
+        || !std::isfinite(wrapped_center.z)) {
+        throw std::invalid_argument(
+            "Exact-member halo-spin center cannot be represented periodically");
+    }
 
     for (const halo::PeriodicNeighbor& member : members) {
         if (member.particle_index >= owned) {
@@ -389,17 +396,21 @@ SpinResult HaloSpin::compute_members(
                 "Exact-member halo-spin phase-space coordinates must be finite");
         }
 
-        const core::Vec3 position{x[index], y[index], z[index]};
-        const core::Vec3 displacement =
-            math::minimum_image_displacement(center, position, box_size);
-        if (!core::scale_safe_norm3_leq(
-                displacement.x,
-                displacement.y,
-                displacement.z,
-                r_delta)) {
+        const core::Vec3 wrapped_position = math::wrap(
+            core::Vec3{x[index], y[index], z[index]}, box_size);
+        if (!std::isfinite(wrapped_position.x)
+            || !std::isfinite(wrapped_position.y)
+            || !std::isfinite(wrapped_position.z)) {
+            throw std::invalid_argument(
+                "Exact-member halo-spin position cannot be represented periodically");
+        }
+        if (!math::minimum_image_distance_leq_wrapped(
+                wrapped_center, wrapped_position, box_size, r_delta)) {
             throw std::invalid_argument(
                 "Exact-member halo-spin particle lies outside the SO aperture");
         }
+        const core::Vec3 displacement = math::minimum_image_displacement(
+            wrapped_center, wrapped_position, box_size);
         const core::Real actual_radius = core::scale_safe_norm3(
             displacement.x, displacement.y, displacement.z);
         if (!std::isfinite(actual_radius)) {
@@ -411,7 +422,7 @@ SpinResult HaloSpin::compute_members(
                 "Exact-member halo-spin cached radius disagrees with particle coordinates");
         }
         if (!math::minimum_image_displacement_is_directionally_unique(
-                center, position, box_size)) {
+                wrapped_center, wrapped_position, box_size)) {
             spin_direction_is_unique = false;
         }
 
@@ -465,10 +476,10 @@ SpinResult HaloSpin::compute_members(
     ScaledSignedSum jz_accumulator;
     for (const halo::PeriodicNeighbor& member : members) {
         const std::size_t index = member.particle_index;
+        const core::Vec3 wrapped_position = math::wrap(
+            core::Vec3{x[index], y[index], z[index]}, box_size);
         const core::Vec3 displacement = math::minimum_image_displacement(
-            center,
-            core::Vec3{x[index], y[index], z[index]},
-            box_size);
+            wrapped_center, wrapped_position, box_size);
         const WideReal mass = static_cast<WideReal>(
             particle_mass(particles, index));
         const WideReal rx = static_cast<WideReal>(displacement.x);

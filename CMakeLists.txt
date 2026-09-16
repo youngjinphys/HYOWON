@@ -15,8 +15,8 @@ set(
     CACHE PATH
     "Optional coherent FFTW installation prefix for headers, base/threads libraries, and FFTW-MPI")
 
-project(HYOWON VERSION 0.0.3 LANGUAGES CXX C)
-set(HYOWON_RELEASE_STAGE "Beta")
+project(HYOWON VERSION 0.1.0 LANGUAGES CXX C)
+set(HYOWON_RELEASE_STAGE "Release")
 
 # Record configure-time source provenance for --version without making Git a
 # build requirement. Source archives therefore remain buildable and report
@@ -117,8 +117,8 @@ endif()
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/project.cmake")
 
 # Numerical reducers and exact-boundary predicates depend on ordinary IEEE-754
-# evaluation order. Keep this as a numerical contract, not a release-operation
-# check, and propagate it to all HYOWON C++ targets through hyowon_core.
+# evaluation order. Keep this as a numerical contract and propagate it to all
+# HYOWON C++ targets through hyowon_core.
 target_compile_options(hyowon_core PUBLIC
     $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:GNU,Clang,AppleClang>>:-fno-fast-math;-fno-unsafe-math-optimizations;-fno-associative-math;-fno-finite-math-only;-ffp-contract=off>
 )
@@ -131,12 +131,33 @@ if(HYOWON_ENABLE_MPI)
     target_sources(hyowon PRIVATE app/hyowon_entry.cpp)
 endif()
 
+option(HYOWON_BUILD_TESTING "Enable the bounded release smoke test" OFF)
+if(HYOWON_BUILD_TESTING)
+    enable_testing()
+    set(HYOWON_SMOKE_ARGUMENTS
+        "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+        "-DBINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        "-DSIMULATOR=$<TARGET_FILE:hyowon>"
+        "-DIC_GENERATOR=$<TARGET_FILE:hyowon_make_ic>")
+    if(HYOWON_BUILD_ANALYZER)
+        list(APPEND HYOWON_SMOKE_ARGUMENTS
+            "-DANALYZER=$<TARGET_FILE:hyowon_analyze>")
+    endif()
+    add_test(NAME release_smoke
+        COMMAND "${CMAKE_COMMAND}" ${HYOWON_SMOKE_ARGUMENTS}
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/release_smoke.cmake")
+    set_tests_properties(release_smoke PROPERTIES TIMEOUT 300
+        ENVIRONMENT "OMP_NUM_THREADS=2")
+endif()
+
 set(CPACK_SOURCE_GENERATOR "TGZ;ZIP")
 set(CPACK_SOURCE_PACKAGE_FILE_NAME "HYOWON-v${PROJECT_VERSION}")
+set(CPACK_PACKAGE_CHECKSUM SHA256)
+# The tracked release tree defines the source surface. Exclude only VCS metadata,
+# generated build/runtime products, and transient local files.
 set(CPACK_SOURCE_IGNORE_FILES
     "/\\.git($|/)" "/build[^/]*/" "/Build/" "/cmake-build[^/]*/"
     "/run/" "/runs/" "/dist/" "/\\.venv/" "/__pycache__/"
-    "/tests/" "/docs/" "/reports/" "/\\.github/"
-    "\\.py$" "\\.pyc$" "\\.log$" "\\.tmp$" "\\.hdf5$" "\\.h5$" "\\.DS_Store$")
+    "\\.pyc$" "\\.log$" "\\.tmp$" "\\.hdf5$" "\\.h5$" "\\.DS_Store$")
 set(CPACK_VERBATIM_VARIABLES YES)
 include(CPack)

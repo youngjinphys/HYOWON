@@ -93,6 +93,27 @@ private:
         bool collect_potential_energy,
         mesh::CICDepositWorkspace* deposition_workspace = nullptr);
 
+    // Evolution-only entry point keeps the reusable CIC workspace in the runtime
+    // adapter without exposing PM scratch state there. The force implementation
+    // itself establishes any serial/replicated byte loan only at the CIC deposit
+    // boundary; distributed PM continues through the owned-workspace fallback.
+    std::optional<PMForceDiagnostics> compute_forces_for_evolution(
+        std::span<const core::Real> pos_x,
+        std::span<const core::Real> pos_y,
+        std::span<const core::Real> pos_z,
+        std::span<const core::Real> masses,
+        std::optional<core::Real> uniform_mass,
+        std::span<core::Real> force_x,
+        std::span<core::Real> force_y,
+        std::span<core::Real> force_z,
+        bool collect_potential_energy,
+        mesh::CICDepositWorkspace& deposition_workspace) {
+        return compute_forces_in_place(
+            pos_x, pos_y, pos_z, masses, uniform_mass,
+            force_x, force_y, force_z, collect_potential_energy,
+            &deposition_workspace);
+    }
+
     // Consume the current pure-PM real-space potential immediately after its
     // force refresh. This path performs scalar reductions only and does not
     // materialize a particle-sized energy-gradient vector.
@@ -112,7 +133,7 @@ private:
         int mpi_size,
         const char* context) const;
 
-    const mesh::MeshGeometry& geom_;
+    mesh::MeshGeometry geom_;
     mesh::PMForceMethod method_;
     bool mpi_global_reduce_{false};
     config::MemoryPolicyParams memory_policy_;

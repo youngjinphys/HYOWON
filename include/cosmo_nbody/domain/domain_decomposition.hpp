@@ -48,7 +48,11 @@ private:
     std::string collect_initial_condition_provenance(
         const core::ParticleStore& local_particles) const;
 
-    const config::SimulationParameters& config_;
+    // Own the immutable numerical configuration rather than depending on a
+    // caller object's lifetime. SimulationParameters copies intentionally share
+    // run-local snapshot provenance, so partition-side provenance publication
+    // remains visible to the runner and I/O layers.
+    config::SimulationParameters config_;
     DomainBounds local_bounds_;
     int rank_{0};
     int size_{1};

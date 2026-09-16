@@ -22,7 +22,7 @@ public:
     void apply(ComplexField& field_k) const;
 
 private:
-    const MeshGeometry& geom_;
+    MeshGeometry geom_;
     PMForceMethod method_;
     std::vector<core::Real> laplacian_symbol_1d_;
     std::vector<core::Real> assignment_window_1d_;

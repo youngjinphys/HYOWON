@@ -240,12 +240,17 @@ public:
     }
 
 private:
-    // A triple product of finite binary64 values lies on the 2^-3222
-    // dyadic grid. Its largest bit is below 6294 on that grid; summing six
-    // determinant terms needs at most three carry bits. 100 limbs cover bits
-    // [0,6399], including every subnormal/normal exponent combination.
+    // Each finite binary64 is an integer multiple of 2^-1074 with |x|<2^1024.
+    // A triple product is therefore a multiple of 2^-3222 and its scaled
+    // integer magnitude is <2^(3072+3222)=2^6294. The largest expression here
+    // is the six-term 3x3 determinant: even placing all six terms in one sign
+    // bucket gives <6*2^6294<2^6297. Products used by the cross/dot predicates
+    // have smaller bounds. 100 limbs supply bits [0,6399], including carries.
+    // This bound applies to these fixed expressions, not an arbitrary number
+    // of calls to add_product/add_triple_product.
     static constexpr int minimum_exponent = -3222;
     static constexpr std::size_t limb_count = 100;
+    static_assert(limb_count * 64 >= 6297);
     using Limbs = std::array<std::uint64_t, limb_count>;
 
     static void add_word(
@@ -589,7 +594,7 @@ WideReal normalized_offdiagonal_gram_energy(
         }
     }
     CompensatedWideSum offdiagonal_energy;
-    for (const auto [first, second] : {
+    for (const auto& [first, second] : {
              std::pair<std::size_t, std::size_t>{0, 1},
              {0, 2},
              {1, 2}}) {
@@ -882,14 +887,22 @@ bool certify_singular_system(
             std::abs(centers[first] - centers[second]));
         return gap > round_up(2.0L * beta);
     };
+    const bool largest_repeated = axis_ratio_b_over_a == 1.0;
+    const bool smallest_repeated =
+        axis_ratio_b_over_a == axis_ratio_c_over_a;
     if (exact_rank == 3) {
-        return round_down(centers[2] - beta) > 0.0L
-            && separated(0, 1)
-            && separated(1, 2);
+        if (!(round_down(centers[2] - beta) > 0.0L)) return false;
+        // A repeated represented eigenvalue defines an eigenspace, not a
+        // unique axis inside that subspace. Certify separation only between
+        // distinct represented clusters; the residual still certifies the
+        // returned orthonormal basis against the represented Gram matrix.
+        if (!largest_repeated && !separated(0, 1)) return false;
+        if (!smallest_repeated && !separated(1, 2)) return false;
+        return true;
     }
     if (exact_rank == 2) {
-        return centers[1] > round_up(2.0L * beta)
-            && separated(0, 1);
+        if (!(centers[1] > round_up(2.0L * beta))) return false;
+        return largest_repeated || separated(0, 1);
     }
     if (exact_rank == 1) {
         return centers[0] > round_up(2.0L * beta);
@@ -1025,9 +1038,6 @@ EigenSystem3 psd_eigensystem_from_qr(
     const bool smallest_repeated =
         result.axis_ratio_b_over_a == result.axis_ratio_c_over_a;
     if (largest_repeated && smallest_repeated) {
-        // A completely degenerate tensor has no preferred orientation. Identity
-        // is a deterministic computational basis; equal axis ratios make the
-        // reduced-tensor metric invariant under any rotation of this basis.
         result.vectors[0] = {1.0, 0.0, 0.0};
         result.vectors[1] = {0.0, 1.0, 0.0};
         result.vectors[2] = {0.0, 0.0, 1.0};
@@ -1088,42 +1098,40 @@ std::optional<WideReal> log_ellipsoidal_radius_squared(
             static_cast<WideReal>(axis.y),
             static_cast<WideReal>(axis.z)};
         CompensatedWideSum approximate_projection;
-        WideReal absolute_terms_upper = 0.0L;
+        // Enclose the exact (displacement dot axis)/displacement_scale.
+        // Widen each rounded division, multiplication and addition by its
+        // adjacent representable values. Monotonicity then preserves the
+        // enclosure, including subnormal/zero rounding; no relative-error
+        // model for underflow or guessed compensated-operation count is used.
+        const WideReal infinity = std::numeric_limits<WideReal>::infinity();
+        const auto down = [infinity](WideReal x) {
+            return std::nextafter(x, -infinity);
+        };
+        const auto up = [infinity](WideReal x) {
+            return std::nextafter(x, infinity);
+        };
+        WideReal lower = 0.0L;
+        WideReal upper = 0.0L;
         for (std::size_t component = 0; component < 3; ++component) {
-            const WideReal term = normalized_components[component]
-                * axis_components[component];
+            const WideReal normalized = normalized_components[component];
+            const WideReal axis_component = axis_components[component];
+            const WideReal term = normalized * axis_component;
             approximate_projection.add(term);
-            const WideReal term_upper = std::nextafter(
-                std::abs(term),
-                std::numeric_limits<WideReal>::infinity());
-            absolute_terms_upper = std::nextafter(
-                absolute_terms_upper + term_upper,
-                std::numeric_limits<WideReal>::infinity());
+            const WideReal quotient_lower = down(normalized);
+            const WideReal quotient_upper = up(normalized);
+            const WideReal term_lower = down(
+                (axis_component < 0.0L ? quotient_upper : quotient_lower)
+                * axis_component);
+            const WideReal term_upper = up(
+                (axis_component < 0.0L ? quotient_lower : quotient_upper)
+                * axis_component);
+            lower = down(lower + term_lower);
+            upper = up(upper + term_upper);
         }
-        // Three scalings, three products, and the compensated three-term sum
-        // use fewer than sixteen rounded arithmetic operations on any path.
-        // The standard gamma_n bound selects the fast path; ambiguous cases
-        // fall back to the exact dyadic accumulator below.
-        constexpr WideReal operation_count = 16.0L;
-        const WideReal unit_roundoff =
-            std::numeric_limits<WideReal>::epsilon() / 2.0L;
-        const WideReal accumulated_roundoff = std::nextafter(
-            operation_count * unit_roundoff,
-            std::numeric_limits<WideReal>::infinity());
-        const WideReal gamma_denominator = std::nextafter(
-            1.0L - accumulated_roundoff,
-            -std::numeric_limits<WideReal>::infinity());
-        if (!(gamma_denominator > 0.0L)) {
-            throw NumericalResolutionError(
-                "HaloShapeAnalyzer projection error bound is not representable");
-        }
-        const WideReal gamma = std::nextafter(
-            accumulated_roundoff / gamma_denominator,
-            std::numeric_limits<WideReal>::infinity());
-        const WideReal forward_error_bound = std::nextafter(
-            gamma * absolute_terms_upper,
-            std::numeric_limits<WideReal>::infinity());
         const WideReal approximate = approximate_projection.value();
+        const WideReal forward_error_bound = std::max(
+            up(std::abs(approximate - lower)),
+            up(std::abs(upper - approximate)));
         const WideReal relative_error_bound = approximate == 0.0L
             ? std::numeric_limits<WideReal>::infinity()
             : std::nextafter(
@@ -1339,12 +1347,6 @@ HaloShapeResult HaloShapeAnalyzer::compute(
         "HaloShapeAnalyzer member index must refer to an owned particle",
         "HaloShapeAnalyzer member indices must be unique");
 
-    // FoF catalogs already arrive in strictly increasing stable ParticleID
-    // order and therefore retain the allocation-free fast path. General callers
-    // are permitted to provide any unique index order; canonicalize that
-    // fallback once so every tensor iteration sees the same arithmetic order.
-    // Compensated floating-point summation improves accuracy but is not, by
-    // itself, permutation invariant over a wide dynamic range.
     std::vector<std::size_t> canonical_members;
     if (membership_path == detail::MembershipValidationPath::GeneralUnique) {
         canonical_members.assign(member_indices.begin(), member_indices.end());
@@ -1411,15 +1413,13 @@ HaloShapeResult HaloShapeAnalyzer::compute(
         return unavailable;
     }
 
-    if (options.use_reduced_tensor) {
-        if (exact_member_span.rank < 3) {
-            HaloShapeResult unavailable;
-            unavailable.particle_count = member_indices.size();
-            unavailable.directional_particle_count =
-                member_directional_particle_count;
-            unavailable.rank_deficient_reduced_metric = true;
-            return unavailable;
-        }
+    if (options.use_reduced_tensor && exact_member_span.rank < 3) {
+        HaloShapeResult unavailable;
+        unavailable.particle_count = member_indices.size();
+        unavailable.directional_particle_count =
+            member_directional_particle_count;
+        unavailable.rank_deficient_reduced_metric = true;
+        return unavailable;
     }
 
     core::Vec3 major_axis{1.0, 0.0, 0.0};
@@ -1454,8 +1454,6 @@ HaloShapeResult HaloShapeAnalyzer::compute(
             return unresolved;
         }
     };
-    // Bootstrap reduced-tensor iteration from an unreduced eigenbasis so the
-    // first reweighting is not biased by an arbitrary axis choice.
     if (options.use_reduced_tensor) {
         HaloShapeOptions boot = options;
         boot.use_reduced_tensor = false;
@@ -1466,9 +1464,7 @@ HaloShapeResult HaloShapeAnalyzer::compute(
             q,
             s,
             boot);
-        if (seed.solver_indeterminate) {
-            return seed;
-        }
+        if (seed.solver_indeterminate) return seed;
         major_axis = seed.major_axis;
         intermediate_axis = seed.intermediate_axis;
         minor_axis = seed.minor_axis;
@@ -1726,13 +1722,31 @@ HaloShapeResult HaloShapeAnalyzer::compute_once(
     result.minor_axis = eigen.vectors[2];
     result.axis_ratio_b_over_a = eigen.axis_ratio_b_over_a;
     result.axis_ratio_c_over_a = eigen.axis_ratio_c_over_a;
-    const core::Real q2 = result.axis_ratio_b_over_a
-        * result.axis_ratio_b_over_a;
-    const core::Real s2 = result.axis_ratio_c_over_a
-        * result.axis_ratio_c_over_a;
-    const core::Real denominator = 1.0 - s2;
-    result.triaxiality = denominator > 0.0
-        ? (1.0 - q2) / denominator : 0.0;
+
+    // Use the factored expression on the represented axis ratios. It is
+    // algebraically identical to (1-q^2)/(1-s^2) but avoids squaring values
+    // near one and then subtracting two nearly equal binary64 numbers. This
+    // improves arithmetic conditioning without inventing a near-sphericity
+    // cutoff; exactly spherical represented tensors remain undefined by flag.
+    const WideReal represented_q =
+        static_cast<WideReal>(result.axis_ratio_b_over_a);
+    const WideReal represented_s =
+        static_cast<WideReal>(result.axis_ratio_c_over_a);
+    if (result.axis_ratio_c_over_a == 1.0) {
+        result.triaxiality = 0.0;
+    } else {
+        const WideReal numerator =
+            (1.0L - represented_q) * (1.0L + represented_q);
+        const WideReal denominator =
+            (1.0L - represented_s) * (1.0L + represented_s);
+        if (!(denominator > 0.0L)) {
+            throw NumericalResolutionError(
+                "HaloShapeAnalyzer triaxiality denominator is not positive");
+        }
+        result.triaxiality = checked_real(
+            numerator / denominator,
+            "HaloShapeAnalyzer triaxiality is not representable");
+    }
     if (!std::isfinite(result.axis_ratio_b_over_a)
         || !std::isfinite(result.axis_ratio_c_over_a)
         || !std::isfinite(result.triaxiality)
