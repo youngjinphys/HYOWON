@@ -2,6 +2,7 @@
 #include "cosmo_nbody/config/simulation_parameters.hpp"
 
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <exception>
 #include <iostream>
@@ -44,10 +45,9 @@ public:
             }
             owns_mpi_ = true;
             if (provided < MPI_THREAD_FUNNELED) {
-                (void)MPI_Finalize();
-                owns_mpi_ = false;
-                throw std::runtime_error(
-                    "MPI implementation does not provide MPI_THREAD_FUNNELED");
+                // Peers may already be entering startup collectives; this is
+                // not an agreed exit at which one rank may finalize alone.
+                abort_startup("MPI implementation does not provide MPI_THREAD_FUNNELED");
             }
         } else {
             int is_main = 0;
@@ -61,21 +61,18 @@ public:
         }
         if (MPI_Comm_get_errhandler(MPI_COMM_WORLD, &previous_handler_) != MPI_SUCCESS
             || previous_handler_ == MPI_ERRHANDLER_NULL) {
-            release_noexcept();
-            throw std::runtime_error("Failed to capture MPI_COMM_WORLD error handler");
+            abort_startup("Failed to capture MPI_COMM_WORLD error handler");
         }
-        if (MPI_Comm_set_errhandler(MPI_COMM_WORLD, MPI_ERRORS_RETURN) != MPI_SUCCESS) {
-            (void)MPI_Errhandler_free(&previous_handler_);
-            previous_handler_ = MPI_ERRHANDLER_NULL;
-            release_noexcept();
-            throw std::runtime_error("Failed to install MPI_ERRORS_RETURN during startup");
+        // Application disagreement is synchronized below. Transport failure
+        // has no continuation protocol and must not unwind one rank alone.
+        if (MPI_Comm_set_errhandler(MPI_COMM_WORLD, MPI_ERRORS_ARE_FATAL) != MPI_SUCCESS) {
+            abort_startup("Failed to install MPI_ERRORS_ARE_FATAL during startup");
         }
         handler_changed_ = true;
         if (MPI_Comm_rank(MPI_COMM_WORLD, &rank_) != MPI_SUCCESS
             || MPI_Comm_size(MPI_COMM_WORLD, &size_) != MPI_SUCCESS
             || size_ < 1 || rank_ < 0 || rank_ >= size_) {
-            release_noexcept();
-            throw std::runtime_error("Failed to query MPI startup topology");
+            abort_startup("Failed to query MPI startup topology");
         }
     }
 
@@ -91,7 +88,7 @@ public:
         std::abort();
     }
 
-    std::string broadcast_string(std::string value, int source) const {
+    std::string broadcast_string(std::string_view value, int source) const {
         std::uint64_t length = rank_ == source
             ? static_cast<std::uint64_t>(value.size()) : 0U;
         if (MPI_Bcast(&length, 1, MPI_UINT64_T, source, MPI_COMM_WORLD) != MPI_SUCCESS) {
@@ -100,13 +97,34 @@ public:
         if (length > static_cast<std::uint64_t>(std::numeric_limits<int>::max())) {
             abort_process(1);
         }
-        if (rank_ != source) value.resize(static_cast<std::size_t>(length));
+        // A view avoids a source-side allocation before the first collective.
+        // Both copying and receiver allocation belong to the payload stage.
+        std::string received;
+        try {
+            if (rank_ == source) received.assign(value);
+            else received.resize(static_cast<std::size_t>(length));
+        } catch (...) {
+            abort_process(1);
+        }
         if (length != 0 && MPI_Bcast(
-                value.data(), static_cast<int>(length), MPI_CHAR,
+                received.data(), static_cast<int>(length), MPI_CHAR,
                 source, MPI_COMM_WORLD) != MPI_SUCCESS) {
             abort_process(1);
         }
-        return value;
+        return received;
+    }
+
+    void record_startup_error(
+        std::string& destination, std::string_view message) const noexcept {
+        // Retaining what() may itself allocate before failure agreement. An
+        // empty diagnostic still represents a failed preparation.
+        try {
+            destination.assign(message.empty()
+                ? std::string_view{"startup preparation exception (empty diagnostic)"}
+                : message);
+        } catch (...) {
+            abort_startup("Failed to retain the rank-local startup error");
+        }
     }
 
     void synchronize_startup_error(
@@ -128,8 +146,7 @@ public:
                 MPI_COMM_WORLD) != MPI_SUCCESS) {
             abort_process(1);
         }
-        std::string message = rank_ == source ? local_error : std::string{};
-        message = broadcast_string(std::move(message), source);
+        const std::string message = broadcast_string(local_error, source);
         throw std::runtime_error(
             std::string(stage) + " failed on rank " + std::to_string(source)
             + (message.empty() ? std::string{} : ": " + message));
@@ -138,7 +155,7 @@ public:
     void require_equal_string(
         const std::string& value,
         std::string_view label) const {
-        const std::string root = broadcast_string(rank_ == 0 ? value : std::string{}, 0);
+        const std::string root = broadcast_string(value, 0);
         const int different = value == root ? 0 : 1;
         int any_different = 0;
         if (MPI_Allreduce(
@@ -172,6 +189,13 @@ public:
     }
 
 private:
+    [[noreturn]] void abort_startup(const char* message) const noexcept {
+        // Avoid allocating a diagnostic while handling memory exhaustion.
+        std::fprintf(stderr, "HYOWON MPI startup failed: %s\n", message);
+        std::fflush(stderr);
+        abort_process(1);
+    }
+
     void release_noexcept() noexcept {
         int finalized = 0;
         const bool live = MPI_Finalized(&finalized) == MPI_SUCCESS && !finalized;
@@ -274,9 +298,9 @@ int main(int argc, char** argv) {
         try {
             config.emplace(preflight_config(argc, argv));
         } catch (const std::exception& error) {
-            local_error = error.what();
+            startup.record_startup_error(local_error, error.what());
         } catch (...) {
-            local_error = "unknown startup configuration exception";
+            startup.record_startup_error(local_error, "unknown startup configuration exception");
         }
         startup.synchronize_startup_error(local_error, "HYOWON MPI preflight");
         if (!config.has_value()) {

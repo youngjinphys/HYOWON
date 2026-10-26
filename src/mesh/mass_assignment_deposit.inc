@@ -189,6 +189,7 @@ void CICMassAssignment::deposit_impl(
             right_ghost->data()};
     };
 
+    const CICCoordinateAxis coordinate_axis(L, dx_, N);
     const auto deposit_plane_task = [&](std::size_t task) {
         const auto [global_x_bound, plane_bound] = resolve_task(task);
         const std::size_t global_x = global_x_bound;
@@ -199,12 +200,9 @@ void CICMassAssignment::deposit_impl(
                      cursor < bins.offsets[base_x + 1];
                      ++cursor) {
                     const std::size_t particle = bins.particles.at(cursor);
-                    const auto x_coordinate = cic_coordinate_1d(
-                        pos_x[particle], L, dx_, N);
-                    const auto y_coordinate = cic_coordinate_1d(
-                        pos_y[particle], L, dx_, N);
-                    const auto z_coordinate = cic_coordinate_1d(
-                        pos_z[particle], L, dx_, N);
+                    const auto x_coordinate = coordinate_axis(pos_x[particle]);
+                    const auto y_coordinate = coordinate_axis(pos_y[particle]);
+                    const auto z_coordinate = coordinate_axis(pos_z[particle]);
                     const auto iy = y_coordinate.base;
                     const auto iz = z_coordinate.base;
                     const core::Real tx = x_coordinate.fraction;

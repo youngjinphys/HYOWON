@@ -15,6 +15,9 @@
 #include <vector>
 
 namespace cosmo_nbody {
+namespace io {
+class RestartIO;
+}
 namespace config {
 
 // Physical coordinates default invalid so omission cannot silently select a run.
@@ -242,6 +245,10 @@ public:
     }
 
 private:
+    // Restart decoding prepares provenance independently, then publishes into
+    // this shared object only after the complete checkpoint has been admitted.
+    friend class io::RestartIO;
+
     struct RuntimeProvenanceState {
         std::string verified_snapshot_ic_sha256;
         std::string verified_snapshot_ic_run_metadata_json;

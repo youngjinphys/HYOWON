@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.1.1
+
+Maintenance changes relative to `v0.1.0` at
+`be99e25c556059f2c9629108994a9d4bb427bac4`:
+
+- Cache zero-origin CIC geometry per operation while preserving wrapping,
+  division, weights, particle order, empty-input behavior, and accumulation order.
+- Parallelize nonnegative segment sums with the existing exact integer
+  accumulator, combining partial accumulators before the final binary64 rounding.
+- Process complete SHA-256 blocks directly and encode hexadecimal output without
+  a formatting stream; keep SHA-256 and canonical content encodings unchanged.
+- Publish restart particles, time, and shared provenance only after manifest
+  validation and all-rank read agreement. Hash the opened manifest stream through
+  EOF, and rewind bound HDF5 descriptors before opening or hashing them.
+- Synchronize MPI force-storage preparation and publication errors, and guard
+  startup string allocation and MPI transport failures.
+- Use the classic locale for machine-readable text and Linux memory counters.
+  Refresh Git source observations at build time without claiming exact dirty-tree
+  contents or executable attestation.
+- Retain and clarify the build, MPI-provider, execution, analysis, and citation
+  guidance from the post-v0.1.0 README update.
+
+The force operator, FFT layouts/planner policy/normalization, drift/kick arithmetic,
+initial-condition model, defaults, and snapshot/restart schemas are unchanged.
+Bitwise comparisons require the same inputs, execution configuration, and FFTW
+plans; this patch does not promise identity across thread counts or MPI layouts.
+
+Validation used Linux Release builds with MPI disabled/enabled and the existing
+release smoke check. Generated ICs matched, as did 64-particle evolution/restart
+runs with one/two host threads and with two MPI ranks under matching FFTW plans.
+Serial field-analysis output matched on a common snapshot. Separate temporary
+checks covered CIC boundaries, exact sums,
+SHA-256 vectors/chunking, rejected checkpoint state preservation, and incremental
+source capture. These are bounded software checks, not convergence evidence;
+the descriptor-offset correction was not exercised on macOS.
+
 ## 0.1.0 — Paper 0 release
 
 First Paper 0 public research release. Changes are compared with public HYOWON

@@ -307,6 +307,7 @@ XPlaneBins build_x_plane_bins(
         static_cast<std::size_t>(thread_count) * mesh_size, 0);
     auto& thread_counts = storage.thread_counts;
     auto& thread_offsets = storage.thread_offsets;
+    const CICCoordinateAxis coordinate_axis(box_size, cell_size, mesh_size);
 
 #ifdef COSMO_NBODY_HAS_OPENMP
     #pragma omp parallel num_threads(thread_count) if(thread_count > 1)
@@ -327,8 +328,7 @@ XPlaneBins build_x_plane_bins(
             thread_counts.data() + thread * mesh_size;
 
         for (std::size_t particle = begin; particle < end; ++particle) {
-            const auto coordinate = cic_coordinate_1d(
-                pos_x[particle], box_size, cell_size, mesh_size);
+            const auto coordinate = coordinate_axis(pos_x[particle]);
             const auto base = static_cast<std::size_t>(coordinate.base);
             ++local_counts[base];
         }
@@ -364,8 +364,7 @@ XPlaneBins build_x_plane_bins(
         auto* local_offsets =
             thread_offsets.data() + thread * mesh_size;
         for (std::size_t particle = begin; particle < end; ++particle) {
-            const auto coordinate = cic_coordinate_1d(
-                pos_x[particle], box_size, cell_size, mesh_size);
+            const auto coordinate = coordinate_axis(pos_x[particle]);
             const auto base = static_cast<std::size_t>(coordinate.base);
             storage.particles.set(local_offsets[base]++, particle);
         }
@@ -389,7 +388,7 @@ void zero_buffer(std::span<core::Real> values) {
 using detail::XPlaneBins;
 using detail::XPlaneStorage;
 using detail::build_x_plane_bins;
-using detail::cic_coordinate_1d;
+using detail::CICCoordinateAxis;
 using detail::require_finite_positions;
 using detail::require_position_sizes;
 using detail::zero_buffer;

@@ -553,7 +553,7 @@ int main(int argc, char** argv) {
             << (argv[0] != nullptr ? argv[0] : "hyowon")
             << " <config.toml> [--restart <checkpoint-directory>] "
                "[--set section.key=value ...]\n"
-            << "  --version  Print configure-time build identity without starting a run.\n";
+            << "  --version  Print build-time source identity without starting a run.\n";
         return 0;
     }
     if (argc < 2) {

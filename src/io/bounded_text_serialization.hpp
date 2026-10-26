@@ -5,6 +5,7 @@
 #include <cstring>
 #include <ios>
 #include <limits>
+#include <locale>
 #include <ostream>
 #include <stdexcept>
 #include <streambuf>
@@ -108,6 +109,7 @@ private:
 template <typename Renderer>
 void render_text(std::streambuf& buffer, Renderer&& renderer) {
     std::ostream output(&buffer);
+    output.imbue(std::locale::classic());
     output.exceptions(std::ios::badbit | std::ios::failbit);
     output.precision(17);
     std::forward<Renderer>(renderer)(output);

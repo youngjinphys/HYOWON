@@ -39,7 +39,7 @@ void write_analysis_build_provenance(
         << "  \"source_capture_phase\": \""
         << cosmo_nbody::build_info::SOURCE_CAPTURE_PHASE << "\",\n"
         << "  \"build_provenance_scope\": "
-           "\"configure_time_git_observation_not_executable_attestation\"\n"
+           "\"build_time_git_observation_not_executable_attestation\"\n"
         << "}\n";
     cosmo_nbody::io::close_checked_output_file(
         output, path, "analysis build provenance");
@@ -53,7 +53,7 @@ int entry_main(int argc, char** argv) {
         && (std::string_view(argv[1]) == "--help"
             || std::string_view(argv[1]) == "-h")) {
         std::cout << cosmo_nbody::analysis::analysis_request_usage()
-                  << "\n  --version  Print configure-time build identity without running analysis.\n";
+                  << "\n  --version  Print build-time source identity without running analysis.\n";
         return 0;
     }
 

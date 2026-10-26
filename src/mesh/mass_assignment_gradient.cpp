@@ -107,18 +107,17 @@ void CICMassAssignment::interpolate_centered_gradient3_add_full_mesh(
     const core::Real box_size = geom_.box_size();
     const core::Real two_dx = 2.0 * dx_;
     const std::size_t N = geom_.grid_size();
+    if (count == 0) return;
+    const detail::CICCoordinateAxis coordinate_axis(box_size, dx_, N);
     int lost_nonzero_gradient_product = 0;
 #ifdef COSMO_NBODY_HAS_OPENMP
     #pragma omp parallel for schedule(static) \
         reduction(|: lost_nonzero_gradient_product)
 #endif
     for (std::size_t particle = 0; particle < count; ++particle) {
-        const auto x_coordinate = detail::cic_coordinate_1d(
-            pos_x[particle], box_size, dx_, N);
-        const auto y_coordinate = detail::cic_coordinate_1d(
-            pos_y[particle], box_size, dx_, N);
-        const auto z_coordinate = detail::cic_coordinate_1d(
-            pos_z[particle], box_size, dx_, N);
+        const auto x_coordinate = coordinate_axis(pos_x[particle]);
+        const auto y_coordinate = coordinate_axis(pos_y[particle]);
+        const auto z_coordinate = coordinate_axis(pos_z[particle]);
         const auto ix = x_coordinate.base;
         const auto iy = y_coordinate.base;
         const auto iz = z_coordinate.base;

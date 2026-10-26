@@ -33,6 +33,17 @@ std::runtime_error system_error(
 }
 
 #if !defined(_WIN32)
+void rewind_regular_file(
+    int descriptor,
+    const std::string& context,
+    const std::filesystem::path& path) {
+    if (::lseek(descriptor, 0, SEEK_SET) < 0) {
+        throw system_error(
+            context, "could not rewind bound file before descriptor-backed read",
+            path, errno);
+    }
+}
+
 bool same_file_identity(
     const struct stat& lhs,
     const struct stat& rhs) noexcept {
@@ -134,6 +145,8 @@ ExactHdf5FileIdentity ExactHdf5FileIdentity::open_readonly(
             + path.string());
     }
 
+    // /dev/fd can share the bound descriptor's offset (notably on macOS).
+    rewind_regular_file(descriptor, impl->context, impl->requested_path);
     impl->file = H5FileHandle::checked(
         H5Fopen(
             impl->descriptor_path.string().c_str(),
@@ -301,6 +314,10 @@ std::string ExactHdf5FileIdentity::finish_sha256() const {
     throw std::runtime_error(
         impl_->context + ": exact HDF5 identity is unavailable on this platform");
 #else
+    // A previous consumer of a shared-offset alias may have left it at EOF.
+    // Every digest must begin at byte zero of the already-bound file object.
+    rewind_regular_file(
+        impl_->bound_descriptor, impl_->context, impl_->requested_path);
     const std::string digest = sha256_file(impl_->descriptor_path);
     finish_identity();
     return digest;

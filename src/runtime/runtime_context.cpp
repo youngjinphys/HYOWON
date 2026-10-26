@@ -11,6 +11,7 @@
 #include <exception>
 #include <fstream>
 #include <limits>
+#include <locale>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -55,6 +56,7 @@ RuntimeMemoryObservation observe_local_process_memory() noexcept {
     try {
         std::ifstream status("/proc/self/status");
         if (!status) return observation;
+        status.imbue(std::locale::classic());
 
         bool have_current = false;
         bool have_peak = false;

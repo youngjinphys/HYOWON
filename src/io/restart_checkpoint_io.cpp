@@ -5,6 +5,7 @@
 #include "cosmo_nbody/runtime/mpi_collective_stage.hpp"
 #include "cosmo_nbody/runtime/mpi_string_broadcast.hpp"
 
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -15,8 +16,10 @@
 #include <limits>
 #include <locale>
 #include <optional>
+#include <span>
 #include <sstream>
 #include <stdexcept>
+#include <streambuf>
 #include <string>
 #include <utility>
 #include <vector>
@@ -26,6 +29,30 @@
 #endif
 
 namespace cosmo_nbody::io {
+
+// The single-object codec publishes after its own checks; a checkpoint must
+// also accept its manifest and every rank's shard before publishing any state.
+class RestartCheckpointReadAccess {
+public:
+    using State = RestartIO::ReadState;
+
+    static State decode(
+        const RestartIO& restart,
+        RestartReadSession& session,
+        const time::TimeStepper& stepper,
+        std::string_view expected_state_sha256) {
+        return restart.decode_restart(session, stepper, expected_state_sha256);
+    }
+
+    static void publish(
+        const RestartIO& restart,
+        State& state,
+        core::ParticleStore& particles_out,
+        time::TimeStepper& stepper_out) noexcept {
+        restart.publish_restart(state, particles_out, stepper_out);
+    }
+};
+
 namespace {
 
 constexpr const char* kManifestFilename = "checkpoint.meta";
@@ -46,6 +73,8 @@ struct CheckpointManifest {
     core::Real delta_ln_a{0.0};
     std::uint64_t global_particle_count{0};
     std::vector<CheckpointShardRecord> shards;
+    // Exact bytes consumed by the parser, including trailing whitespace.
+    std::string source_sha256;
 };
 
 std::uint64_t checked_size_to_u64(std::size_t value, const char* label) {
@@ -151,6 +180,35 @@ void require_token(std::istream& input, const char* expected) {
     }
 }
 
+// Hash the same opened stream that is parsed. Successful parsing reaches EOF,
+// so the digest covers the entire manifest without reopening its pathname.
+class ManifestReadBuffer final : public std::streambuf {
+public:
+    explicit ManifestReadBuffer(std::ifstream& source) : source_(source) {}
+
+    std::string finish_sha256() { return hash_.finish_hex(); }
+
+protected:
+    int_type underflow() override {
+        if (gptr() != egptr()) return traits_type::to_int_type(*gptr());
+        source_.read(buffer_.data(),
+            static_cast<std::streamsize>(buffer_.size()));
+        if (source_.bad() || (source_.fail() && !source_.eof())) {
+            throw std::runtime_error("Could not read checkpoint manifest");
+        }
+        const auto count = static_cast<std::size_t>(source_.gcount());
+        if (count == 0) return traits_type::eof();
+        hash_.update(std::as_bytes(std::span(buffer_.data(), count)));
+        setg(buffer_.data(), buffer_.data(), buffer_.data() + count);
+        return traits_type::to_int_type(*gptr());
+    }
+
+private:
+    std::ifstream& source_;
+    Sha256Accumulator hash_;
+    std::array<char, 8192> buffer_{};
+};
+
 CheckpointManifest read_manifest(
     const std::filesystem::path& directory,
     int expected_ranks,
@@ -159,12 +217,17 @@ CheckpointManifest read_manifest(
     const auto manifest_path = directory / kManifestFilename;
     require_regular_file(manifest_path, "Checkpoint manifest");
 
-    std::ifstream input(manifest_path, std::ios::binary);
-    input.imbue(std::locale::classic());
-    if (!input) {
+    std::ifstream file(manifest_path, std::ios::binary);
+    if (!file) {
         throw std::runtime_error(
             "Could not open checkpoint manifest: " + manifest_path.string());
     }
+    file.imbue(std::locale::classic());
+
+    ManifestReadBuffer buffer(file);
+    std::istream input(&buffer);
+    input.exceptions(std::ios::badbit);
+    input.imbue(std::locale::classic());
 
     require_token(input, kManifestHeader);
     require_token(input, "ranks");
@@ -233,11 +296,8 @@ CheckpointManifest read_manifest(
         throw std::runtime_error(
             "Checkpoint manifest contains unexpected trailing content");
     }
+    manifest.source_sha256 = buffer.finish_sha256();
     return manifest;
-}
-
-std::string manifest_sha256(const std::filesystem::path& directory) {
-    return sha256_file(directory / kManifestFilename);
 }
 
 void require_local_decoded_state(
@@ -261,27 +321,23 @@ void require_local_decoded_state(
     }
 }
 
-RestartStateIdentityResult read_local_shard(
-    const config::SimulationParameters& config,
+RestartCheckpointReadAccess::State read_local_shard(
+    const RestartIO& restart,
     const CheckpointManifest& manifest,
     const CheckpointShardRecord& shard,
     const std::filesystem::path& shard_path,
-    core::ParticleStore& particles_out,
-    time::TimeStepper& stepper_out) {
+    const time::TimeStepper& stepper) {
     require_regular_file(shard_path, "Checkpoint shard");
-    RestartIO restart(config);
     auto session = restart.open_restart_session(shard_path.string());
-    auto identity = restart.read_restart_with_identity(
-        session,
-        particles_out,
-        stepper_out,
-        shard.restart_state_sha256);
-    if (!identity.persisted || identity.sha256 != shard.restart_state_sha256) {
+    auto state = RestartCheckpointReadAccess::decode(
+        restart, session, stepper, shard.restart_state_sha256);
+    if (!state.identity.persisted
+        || state.identity.sha256 != shard.restart_state_sha256) {
         throw std::runtime_error(
             "Checkpoint shard state identity disagrees with manifest");
     }
-    require_local_decoded_state(manifest, shard, particles_out, stepper_out);
-    return identity;
+    require_local_decoded_state(manifest, shard, state.particles, state.stepper);
+    return state;
 }
 
 CheckpointShardRecord write_local_shard(
@@ -342,18 +398,15 @@ std::string read_serial_checkpoint(
     time::TimeStepper& stepper_out) {
     const auto directory =
         std::filesystem::absolute(checkpoint_directory).lexically_normal();
-    const CheckpointManifest manifest = read_manifest(
+    CheckpointManifest manifest = read_manifest(
         directory, 1, config.num_particles());
-    const std::string manifest_hash = manifest_sha256(directory);
     const auto& shard = manifest.shards.front();
-    (void)read_local_shard(
-        config,
-        manifest,
-        shard,
-        directory / shard.object_name,
-        particles_out,
-        stepper_out);
-    return manifest_hash;
+    RestartIO restart(config);
+    auto state = read_local_shard(
+        restart, manifest, shard, directory / shard.object_name, stepper_out);
+    RestartCheckpointReadAccess::publish(
+        restart, state, particles_out, stepper_out);
+    return std::move(manifest.source_sha256);
 }
 
 #ifdef COSMO_NBODY_HAS_MPI
@@ -624,25 +677,24 @@ std::string read_restart_checkpoint_collective(
         "Collective checkpoint reader requires an MPI-enabled build");
 #else
     require_active_topology(rank, ranks);
-    const auto directory =
-        std::filesystem::absolute(checkpoint_directory).lexically_normal();
-
+    std::filesystem::path directory;
     std::optional<CheckpointManifest> parsed_manifest;
     std::string local_manifest_sha;
     std::exception_ptr manifest_exception;
     try {
+        directory =
+            std::filesystem::absolute(checkpoint_directory).lexically_normal();
         parsed_manifest.emplace(read_manifest(
             directory, ranks, config.num_particles()));
-        local_manifest_sha = manifest_sha256(directory);
+        local_manifest_sha = parsed_manifest->source_sha256;
     } catch (...) {
         manifest_exception = std::current_exception();
     }
     runtime::synchronize_mpi_exception(
         manifest_exception, ranks, "Read checkpoint manifest");
 
-    std::string root_sha = rank == 0 ? local_manifest_sha : std::string{};
-    root_sha = runtime::broadcast_string_collective(
-        root_sha, 0, rank, ranks, "checkpoint manifest identity");
+    std::string root_sha = runtime::broadcast_string_collective(
+        local_manifest_sha, 0, rank, ranks, "checkpoint manifest identity");
     runtime::synchronize_mpi_failure(
         local_manifest_sha == root_sha ? 0 : 1,
         ranks,
@@ -650,20 +702,20 @@ std::string read_restart_checkpoint_collective(
 
     const CheckpointManifest& manifest = *parsed_manifest;
     const auto& shard = manifest.shards.at(static_cast<std::size_t>(rank));
+    std::optional<RestartIO> restart;
+    std::optional<RestartCheckpointReadAccess::State> state;
     std::exception_ptr read_exception;
     try {
-        (void)read_local_shard(
-            config,
-            manifest,
-            shard,
-            directory / shard.object_name,
-            particles_out,
-            stepper_out);
+        restart.emplace(config);
+        state.emplace(read_local_shard(
+            *restart, manifest, shard, directory / shard.object_name, stepper_out));
     } catch (...) {
         read_exception = std::current_exception();
     }
     runtime::synchronize_mpi_exception(
         read_exception, ranks, "Read checkpoint rank shard");
+    RestartCheckpointReadAccess::publish(
+        *restart, *state, particles_out, stepper_out);
     return root_sha;
 #endif
 }

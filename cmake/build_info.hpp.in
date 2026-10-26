@@ -11,9 +11,12 @@ inline constexpr std::string_view RELEASE_STAGE = "@HYOWON_RELEASE_STAGE@";
 inline constexpr std::string_view SOURCE_COMMIT = "@HYOWON_SOURCE_COMMIT@";
 inline constexpr std::string_view SOURCE_TREE = "@HYOWON_SOURCE_TREE@";
 inline constexpr std::string_view SOURCE_STATE = "@HYOWON_SOURCE_STATE@";
-inline constexpr std::string_view SOURCE_CAPTURE_PHASE = "cmake_configure";
+inline constexpr std::string_view SOURCE_CAPTURE_PHASE = "@HYOWON_SOURCE_CAPTURE_PHASE@";
 
-// This is the configure-time observation, not an executable attestation.
+// Refreshed before each executable build. The commit and tree describe HEAD;
+// the state describes the working tree when captured. They do not identify
+// uncommitted file contents or edits made later during compilation, and are
+// not an executable attestation.
 inline bool write_version_if_requested(
     int argc, char* const* argv, std::ostream& out) {
     if (argc != 2 || argv == nullptr || argv[1] == nullptr

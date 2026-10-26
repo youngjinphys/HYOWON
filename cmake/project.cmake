@@ -12,10 +12,29 @@ endif()
 set(HYOWON_GENERATED_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 file(MAKE_DIRECTORY "${HYOWON_GENERATED_INCLUDE_DIR}/cosmo_nbody")
 include(GNUInstallDirs)
-configure_file(
-    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/build_info.hpp.in"
-    "${HYOWON_GENERATED_INCLUDE_DIR}/cosmo_nbody/build_info.hpp"
-    @ONLY)
+# Render once for IDE indexing and again before each executable build. The
+# capture script only rewrites the header when its contents change.
+set(HYOWON_BUILD_INFO_HEADER "${HYOWON_GENERATED_INCLUDE_DIR}/cosmo_nbody/build_info.hpp")
+set(HYOWON_SOURCE_PROVENANCE_COMMAND
+    "${CMAKE_COMMAND}"
+    "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+    "-DTEMPLATE=${CMAKE_CURRENT_SOURCE_DIR}/cmake/build_info.hpp.in"
+    "-DOUTPUT=${HYOWON_BUILD_INFO_HEADER}"
+    "-DPROJECT_VERSION=${PROJECT_VERSION}"
+    "-DHYOWON_RELEASE_STAGE=${HYOWON_RELEASE_STAGE}"
+    "-DGIT_EXECUTABLE=${GIT_EXECUTABLE}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/capture_source_provenance.cmake")
+execute_process(
+    COMMAND ${HYOWON_SOURCE_PROVENANCE_COMMAND}
+    RESULT_VARIABLE HYOWON_SOURCE_PROVENANCE_RESULT)
+if(NOT HYOWON_SOURCE_PROVENANCE_RESULT STREQUAL "0")
+    message(FATAL_ERROR "Source provenance capture failed at configure")
+endif()
+add_custom_target(hyowon_source_provenance
+    COMMAND ${HYOWON_SOURCE_PROVENANCE_COMMAND}
+    BYPRODUCTS "${HYOWON_BUILD_INFO_HEADER}"
+    COMMENT "Capturing source provenance for build_info.hpp"
+    VERBATIM)
 
 option(
     HYOWON_ENABLE_FFTW_THREADS
@@ -194,11 +213,13 @@ if(HYOWON_ENABLE_FFTW_MPI)
 endif()
 
 add_executable(hyowon app/hyowon.cpp)
+add_dependencies(hyowon hyowon_source_provenance)
 target_include_directories(hyowon PRIVATE
     "${HYOWON_GENERATED_INCLUDE_DIR}")
 target_link_libraries(hyowon PRIVATE hyowon_core)
 
 add_executable(hyowon_make_ic app/hyowon_make_ic.cpp)
+add_dependencies(hyowon_make_ic hyowon_source_provenance)
 target_include_directories(hyowon_make_ic PRIVATE
     "${HYOWON_GENERATED_INCLUDE_DIR}")
 target_link_libraries(hyowon_make_ic PRIVATE hyowon_core)
@@ -229,6 +250,7 @@ if(HYOWON_BUILD_ANALYZER)
         app/nbody_analyze_named_so_products.cpp
         app/nbody_analyze_pair_link_stage.cpp
         app/nbody_analyze_outputs.cpp)
+    add_dependencies(hyowon_analyze hyowon_source_provenance)
     target_include_directories(hyowon_analyze PRIVATE
         "${HYOWON_GENERATED_INCLUDE_DIR}")
     target_link_libraries(hyowon_analyze PRIVATE hyowon_analysis)

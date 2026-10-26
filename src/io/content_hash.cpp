@@ -8,10 +8,8 @@
 #include <cstdint>
 #include <cstring>
 #include <fstream>
-#include <iomanip>
 #include <limits>
 #include <numeric>
-#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <system_error>
@@ -59,12 +57,33 @@ public:
         }
         total_bytes_ += static_cast<std::uint64_t>(bytes.size());
 
-        for (const std::byte value : bytes) {
-            buffer_[buffer_size_++] = std::to_integer<std::uint8_t>(value);
+        const auto* input = reinterpret_cast<const std::uint8_t*>(bytes.data());
+        std::size_t remaining = bytes.size();
+
+        // Preserve the block order while avoiding a per-byte copy for complete
+        // input blocks. Only the partial leading and trailing blocks are staged.
+        if (buffer_size_ != 0 && remaining != 0) {
+            const std::size_t copy = std::min(
+                buffer_.size() - buffer_size_, remaining);
+            std::memcpy(buffer_.data() + buffer_size_, input, copy);
+            buffer_size_ += copy;
+            input += copy;
+            remaining -= copy;
             if (buffer_size_ == buffer_.size()) {
                 transform(buffer_.data());
                 buffer_size_ = 0;
             }
+        }
+
+        while (remaining >= buffer_.size()) {
+            transform(input);
+            input += buffer_.size();
+            remaining -= buffer_.size();
+        }
+
+        if (remaining != 0) {
+            std::memcpy(buffer_.data(), input, remaining);
+            buffer_size_ = remaining;
         }
     }
 
@@ -192,12 +211,15 @@ private:
 namespace {
 
 std::string hex_digest(const std::array<std::uint8_t, 32>& digest) {
-    std::ostringstream out;
-    out << std::hex << std::setfill('0');
-    for (const std::uint8_t byte : digest) {
-        out << std::setw(2) << static_cast<unsigned int>(byte);
+    // One allocation either succeeds or throws; stream buffer growth could
+    // instead set badbit and return a truncated digest. No locale is consulted.
+    constexpr char digits[] = "0123456789abcdef";
+    std::string out(2 * digest.size(), '0');
+    for (std::size_t index = 0; index < digest.size(); ++index) {
+        out[2 * index] = digits[digest[index] >> 4U];
+        out[2 * index + 1] = digits[digest[index] & 0x0FU];
     }
-    return out.str();
+    return out;
 }
 
 void encode_little_endian_u64(

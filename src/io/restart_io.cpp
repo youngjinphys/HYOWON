@@ -524,6 +524,15 @@ RestartStateIdentityResult RestartIO::read_restart_with_identity(
     core::ParticleStore& particles_out,
     time::TimeStepper& stepper_out,
     std::string_view expected_state_sha256) const {
+    auto state = decode_restart(session, stepper_out, expected_state_sha256);
+    publish_restart(state, particles_out, stepper_out);
+    return std::move(state.identity);
+}
+
+RestartIO::ReadState RestartIO::decode_restart(
+    RestartReadSession& session,
+    const time::TimeStepper& stepper,
+    std::string_view expected_state_sha256) const {
     const hid_t file = session.file_id();
     if (file < 0) {
         throw std::invalid_argument(
@@ -604,7 +613,7 @@ RestartStateIdentityResult RestartIO::read_restart_with_identity(
             "Restart delta_ln_a must be finite and positive");
     }
     if (static_cast<core::Real>(delta_ln_a_disk)
-        != stepper_out.delta_ln_a()) {
+        != stepper.delta_ln_a()) {
         throw std::runtime_error(
             "Restart delta_ln_a does not exactly match TimeStepper");
     }
@@ -673,7 +682,7 @@ RestartStateIdentityResult RestartIO::read_restart_with_identity(
     loaded.set_acceleration_validity(core::FieldValidity::INVALID);
     loaded.set_ghost_validity(core::FieldValidity::INVALID);
 
-    time::TimeStepper candidate_stepper = stepper_out;
+    time::TimeStepper candidate_stepper = stepper;
     candidate_stepper.restore_state(
         static_cast<std::size_t>(step),
         static_cast<core::Real>(current_a_disk));
@@ -693,12 +702,30 @@ RestartStateIdentityResult RestartIO::read_restart_with_identity(
             "Restart state identity does not match committed manifest");
     }
 
-    // Commit caller-visible and run-local state only after every dynamics,
-    // dataset, payload, state-identity, and step-boundary check has succeeded.
-    config_.set_verified_snapshot_ic_sha256(verified_snapshot_ic_sha256);
-    particles_out = std::move(loaded);
-    stepper_out = std::move(candidate_stepper);
-    return identity;
+    // Prepare lineage without mutating the shared run-local object. A
+    // checkpoint wrapper may still reject its manifest or another rank's shard.
+    config::SimulationParameters prepared_config = config_;
+    prepared_config.runtime_provenance =
+        std::make_shared<config::SimulationParameters::RuntimeProvenanceState>(
+            *config_.runtime_provenance);
+    prepared_config.set_verified_snapshot_ic_sha256(verified_snapshot_ic_sha256);
+    return ReadState{
+        std::move(loaded), std::move(candidate_stepper), std::move(identity),
+        std::move(prepared_config.runtime_provenance)};
+}
+
+void RestartIO::publish_restart(
+    ReadState& state,
+    core::ParticleStore& particles_out,
+    time::TimeStepper& stepper_out) const noexcept {
+    // Keep the shared object so existing configuration copies see the same
+    // admitted lineage. All allocation and validation precedes this boundary.
+    using std::swap;
+    static_assert(std::is_nothrow_swappable_v<
+        config::SimulationParameters::RuntimeProvenanceState>);
+    swap(*config_.runtime_provenance, *state.provenance);
+    particles_out = std::move(state.particles);
+    stepper_out = std::move(state.stepper);
 }
 
 } // namespace io

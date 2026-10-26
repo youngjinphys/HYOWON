@@ -1,7 +1,9 @@
 #include "cosmo_nbody/math/mpi_exact_nonnegative_sum.hpp"
 
 #include "cosmo_nbody/math/exact_positive_sum.hpp"
+#include "cosmo_nbody/runtime/thread_policy.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -62,6 +64,59 @@ ExactPositiveDoubleSum exact_nonnegative_double_accumulator(
 
 ExactPositiveDoubleSum exact_nonnegative_segment_accumulator(
     std::span<const std::span<const core::Real>> segments) {
+    // Only this workload estimate saturates. The existing exact accumulator
+    // continues to own the uint64_t term-count limit, including across spans.
+    std::size_t work_items = 0;
+    for (const auto segment : segments) {
+        work_items += std::min(
+            segment.size(),
+            std::numeric_limits<std::size_t>::max() - work_items);
+    }
+    const std::size_t worker_count =
+        runtime::host_parallel_worker_capacity(work_items);
+    if (worker_count > 1) {
+        std::vector<ExactPositiveDoubleSum> partial_sums(worker_count);
+        std::vector<std::exception_ptr> partial_exceptions(worker_count);
+#ifdef COSMO_NBODY_HAS_OPENMP
+        #pragma omp parallel for schedule(static) \
+            if(runtime::should_use_host_parallel_team(worker_count))
+#endif
+        for (std::size_t worker = 0; worker < worker_count; ++worker) {
+            try {
+                auto& local = partial_sums[worker];
+                for (const auto segment : segments) {
+                    const std::size_t block = segment.size() / worker_count;
+                    const std::size_t remainder = segment.size() % worker_count;
+                    const std::size_t begin =
+                        worker * block + std::min(worker, remainder);
+                    const std::size_t end =
+                        begin + block + (worker < remainder ? 1U : 0U);
+                    for (std::size_t index = begin; index < end; ++index) {
+                        const core::Real value = segment[index];
+                        if (!std::isfinite(value) || value < 0.0) {
+                            throw std::invalid_argument(
+                                "Exact non-negative segment sum requires finite non-negative values");
+                        }
+                        local.add(value);
+                    }
+                }
+            } catch (...) {
+                partial_exceptions[worker] = std::current_exception();
+            }
+        }
+        for (const auto& exception : partial_exceptions) {
+            if (exception) std::rethrow_exception(exception);
+        }
+
+        // Every input is already a binary64 value. Combining integer limbs
+        // before the caller's value() preserves the serial sum and its single
+        // rounding; no floating-point partial sum is formed here.
+        ExactPositiveDoubleSum result;
+        for (const auto& partial : partial_sums) result.combine(partial);
+        return result;
+    }
+
+    // Keep the allocation-free serial path, including empty input.
     ExactPositiveDoubleSum result;
     for (const auto segment : segments) {
         for (const core::Real value : segment) {

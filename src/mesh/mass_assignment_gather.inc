@@ -1,5 +1,7 @@
 #include "cosmo_nbody/runtime/thread_policy.hpp"
 
+#include <optional>
+
 namespace detail {
 
 struct CICGatherSupport {
@@ -7,6 +9,7 @@ struct CICGatherSupport {
     std::size_t local_start{0};
     std::size_t local_end{0};
     bool decomposed{false};
+    std::optional<CICCoordinateAxis> coordinate_axis;
 };
 
 struct CICGatherValue {
@@ -52,20 +55,25 @@ CICGatherSupport prepare_cic_gather_support(
             "Decomposed CIC interpolation requires a right ghost plane");
     }
 
+    // Empty gathers did not evaluate coordinates. Keep that admission behavior
+    // while sharing one validated axis across all particles of a non-empty call.
+    if (pos_x.empty()) {
+        return CICGatherSupport{N, local_start, local_end, decomposed, std::nullopt};
+    }
+    const CICCoordinateAxis coordinate_axis(geom.box_size(), cell_size, N);
+
     // Domain decomposition assigns each particle by the wrapped base x-cell.
     // CIC gather therefore needs only that local base plane and its right
     // neighbour. Prove this once before any caller mutates output or accumulates
     // a diagnostic so both gather APIs share the same ownership definition.
     if (decomposed) {
-        const core::Real L = geom.box_size();
         std::size_t first_foreign = pos_x.size();
 #ifdef COSMO_NBODY_HAS_OPENMP
         #pragma omp parallel for schedule(static) reduction(min: first_foreign) \
             if(runtime::should_use_host_parallel_team(pos_x.size()))
 #endif
         for (std::size_t particle = 0; particle < pos_x.size(); ++particle) {
-            const auto coordinate = cic_coordinate_1d(
-                pos_x[particle], L, cell_size, N);
+            const auto coordinate = coordinate_axis(pos_x[particle]);
             const std::size_t base =
                 static_cast<std::size_t>(coordinate.base);
             if (base < local_start || base >= local_end) {
@@ -78,23 +86,22 @@ CICGatherSupport prepare_cic_gather_support(
         }
     }
 
-    return CICGatherSupport{N, local_start, local_end, decomposed};
+    return CICGatherSupport{N, local_start, local_end, decomposed, coordinate_axis};
 }
 
 CICGatherValue gather_cic_particle_value(
     const MeshGeometry& geom,
-    core::Real cell_size,
     const CICGatherSupport& support,
     const RealField& field,
     const RealField* right_ghost,
     core::Real x,
     core::Real y,
     core::Real z) {
-    const core::Real L = geom.box_size();
     const std::size_t N = support.grid_size;
-    const auto x_coordinate = cic_coordinate_1d(x, L, cell_size, N);
-    const auto y_coordinate = cic_coordinate_1d(y, L, cell_size, N);
-    const auto z_coordinate = cic_coordinate_1d(z, L, cell_size, N);
+    const auto& coordinate_axis = *support.coordinate_axis;
+    const auto x_coordinate = coordinate_axis(x);
+    const auto y_coordinate = coordinate_axis(y);
+    const auto z_coordinate = coordinate_axis(z);
     const auto ix = x_coordinate.base;
     const auto iy = y_coordinate.base;
     const auto iz = z_coordinate.base;
@@ -236,7 +243,6 @@ core::Accum CICMassAssignment::interpolate_mass_weighted_sum(
             const detail::CICGatherValue gathered =
                 detail::gather_cic_particle_value(
                     geom_,
-                    dx_,
                     support,
                     field,
                     right_ghost,
@@ -320,15 +326,14 @@ core::Accum CICMassAssignment::interpolate_mass_weighted_sum_full_mesh(
 
     const core::Real L = geom_.box_size();
     const std::size_t N = geom_.grid_size();
+    if (pos_x.empty()) return core::Accum{0.0};
+    const CICCoordinateAxis coordinate_axis(L, dx_, N);
     const core::Accum result = math::deterministic_blocked_sum(
         pos_x.size(),
         [&](std::size_t particle) {
-            const auto x_coordinate = cic_coordinate_1d(
-                pos_x[particle], L, dx_, N);
-            const auto y_coordinate = cic_coordinate_1d(
-                pos_y[particle], L, dx_, N);
-            const auto z_coordinate = cic_coordinate_1d(
-                pos_z[particle], L, dx_, N);
+            const auto x_coordinate = coordinate_axis(pos_x[particle]);
+            const auto y_coordinate = coordinate_axis(pos_y[particle]);
+            const auto z_coordinate = coordinate_axis(pos_z[particle]);
             const auto ix = x_coordinate.base;
             const auto iy = y_coordinate.base;
             const auto iz = z_coordinate.base;
@@ -421,7 +426,6 @@ void CICMassAssignment::interpolate_impl(
         const detail::CICGatherValue gathered =
             detail::gather_cic_particle_value(
                 geom_,
-                dx_,
                 support,
                 field,
                 right_ghost,

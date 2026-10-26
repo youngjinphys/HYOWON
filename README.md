@@ -1,7 +1,7 @@
 # HYOWON
 
-`0.1.0` — the Paper 0 public research release of a C++20 cosmological N-body
-implementation for a periodic, collisionless, one-fluid matter–Λ model. It
+`0.1.1` — the Paper 0 public research release of a C++20 cosmological N-body
+implementation for a flat, periodic, collisionless, one-fluid matter–Λ model. It
 provides pure PM, an experimental TreePM path, 1LPT/2LPT initial conditions,
 native HDF5 snapshots and restart, optional MPI/FFTW-MPI execution, and a
 standalone analysis program.
@@ -16,10 +16,17 @@ massive-neutrino clustering.
 [GPL-3.0-or-later](LICENSE) · [Third-party notices](THIRD_PARTY_NOTICES.md) ·
 [Citation metadata](CITATION.cff) · [Changelog](CHANGELOG.md)
 
+Version 0.1.1 preserves the v0.1.0 numerical operators and artifact schemas while
+reducing repeated CIC geometry work, parallelizing exact segment sums, and
+streamlining SHA-256. It also makes checkpoint loading transactional through
+manifest/rank agreement, closes MPI preparation error gaps, fixes locale-sensitive
+text output, and refreshes source identity at build time. See the
+[changelog](CHANGELOG.md#011) for scope and compatibility details.
+
 ## Requirements and build
 
 - CMake 3.20 or newer
-- C++20 compiler
+- C and C++20 compilers
 - FFTW3
 - HDF5 C library
 - Boost headers for analyzer exact-integer arithmetic
@@ -28,6 +35,11 @@ massive-neutrino clustering.
 
 `toml++` is fetched from a pinned upstream commit unless
 `FETCHCONTENT_SOURCE_DIR_TOMLPLUSPLUS` points to a local source tree.
+The first configure therefore needs network access unless that source is supplied.
+
+Run the commands below from the repository root. Relative input and output paths
+are resolved from the process working directory, including paths inside TOML
+files; they are not relative to the TOML file's directory.
 
 On Debian/Ubuntu, the default build dependencies can be installed with
 `sudo apt install build-essential cmake git libfftw3-dev libhdf5-dev libboost-dev`.
@@ -35,8 +47,16 @@ The analyzer needs the Boost development headers; an existing header installatio
 can instead be selected with `-DHYOWON_BOOST_INCLUDE_DIR=/path/to/include`.
 
 ```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+  -DHYOWON_BUILD_TESTING=ON -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=ON
 cmake --build build --parallel 2
+ctest --test-dir build --output-on-failure
+```
+
+Optional installation (the configure flag above retains non-system dependency
+search paths for installed executables; those libraries must remain available):
+
+```sh
 cmake --install build --prefix "$HOME/.local"
 ```
 
@@ -48,26 +68,26 @@ HYOWON-owned C++ targets disable floating-point reassociation and unsafe
 fast-math transformations because exact boundary predicates and deterministic
 reductions rely on ordinary IEEE-754 evaluation order.
 
-For a serial CPU build:
+For a build with OpenMP and FFTW threading disabled:
 
 ```sh
-cmake -S . -B build-serial \
+cmake -S . -B build-serial -DCMAKE_BUILD_TYPE=Release \
   -DHYOWON_ENABLE_OPENMP=OFF \
   -DHYOWON_ENABLE_FFTW_THREADS=OFF
+cmake --build build-serial --parallel 2
 ```
 
-To check the installed build dependencies and executable paths before a longer run:
+Use `build-serial/` instead of `build/` in the execution examples for that build.
+The default build enables OpenMP/FFTW threading and has MPI disabled. For an
+OpenMP-enabled build, set `runtime.num_threads` in the TOML file (or pass
+`--set runtime.num_threads=2` to `hyowon`) to choose the host thread count.
+Use `runtime.num_threads=1` with `build-serial`.
 
-```sh
-cmake -S . -B build -DHYOWON_BUILD_TESTING=ON
-cmake --build build --parallel 2
-ctest --test-dir build --output-on-failure
-```
-
-The optional smoke test generates 64-particle ICs, evolves them, resumes a
-checkpoint with parent lineage, checks refusal to overwrite existing outputs,
-and runs field analysis when enabled. It uses a private temporary directory
-inside the build tree, removes it on success, and retains it on failure.
+`HYOWON_BUILD_TESTING=ON` enables a smoke test that generates 64-particle ICs,
+evolves them, resumes a checkpoint with parent lineage, checks refusal to
+overwrite existing outputs, and runs field analysis when enabled. It uses a
+private temporary directory inside the build tree, removes it on success,
+and retains it on failure.
 This checks a bounded software path, not scientific convergence or multi-rank MPI.
 
 ## Quick start
@@ -80,18 +100,18 @@ build/hyowon examples/quickstart_generate.toml
 ```
 
 It evolves 64 particles from z=9 to z=8 and writes snapshots/checkpoints below
-`runs/quickstart_generate/`. This is a software-path example, not a converged
+`runs/quickstart_generate/`. Existing run directories are refused. To repeat it,
+choose a new label, for example `--set output.run_label=quickstart_second`.
+This is a software-path example, not a converged
 cosmological calculation. Generator provenance and the small background-model
 mismatch are documented in [the quick-start spectrum notes](examples/quickstart_camb/README.md).
 
-For a custom cosmology, supply a matching external spectrum and use the editable
-configuration templates:
+To generate a reusable IC and evolve it separately with the same tiny example:
 
 ```sh
 mkdir -m 700 run
-cp examples/minimal_generate.toml run/generate.toml
+cp examples/quickstart_generate.toml run/generate.toml
 cp examples/minimal_snapshot.toml run/snapshot.toml
-# Set ic.power_spectrum_file in run/generate.toml.
 
 build/hyowon_make_ic run/generate.toml \
   --output run/ic.hdf5 --evidence run/ic.json
@@ -101,21 +121,56 @@ build/hyowon run/snapshot.toml \
   --set output.root_directory=run/output
 ```
 
+For a custom calculation, start from `examples/minimal_generate.toml` and
+`examples/minimal_snapshot.toml`. Set `ic.power_spectrum_file` and
+`ic.power_spectrum_redshift` in the generate config to a matching external table.
+Set `[cosmology]`, box size, particle count and start redshift consistently in
+both configs; snapshot ingestion checks them against the IC. The maintained
+background requires `omega_m + omega_lambda = 1`. Set strictly increasing
+`snapshot_scale_factors` after the start scale factor and at or before the final
+scale factor. See the spectrum requirements below.
+
 Keep the original IC file. Restart reopens it to verify the bound source identity.
-Use a new `output.run_label` for each execution.
+Resume with the original cosmology, box/force settings, IC identity, time interval,
+timestep, snapshot schedule and MPI mode/rank count. Use a fresh output directory
+or label. For the two-stage example above:
 
 ```sh
-build/hyowon run/snapshot.toml --restart CHECKPOINT_DIRECTORY \
+build/hyowon run/snapshot.toml \
+  --restart run/output/minimal_snapshot/checkpoints/restart_step_3 \
   --set ic.snapshot_file=run/ic.hdf5 \
+  --set output.root_directory=run/output \
   --set output.run_label=resumed
 ```
 
-A multi-rank launch requires an MPI build and `runtime.mpi_enabled=true`:
+A multi-rank PM launch needs MPI C++ development tools/runtime and FFTW-MPI
+headers/libraries in addition to the default dependencies. On Debian/Ubuntu,
+the Open MPI packages are `libopenmpi-dev`, `openmpi-bin` and `libfftw3-mpi-dev`.
+Configure both MPI options in a separate build directory, then launch the
+snapshot example with MPI enabled and a fresh output label. The prefixes below
+select the Debian/Ubuntu system packages; replace them with the intended HDF5
+and FFTW prefixes for other installations.
+
+Use one coherent FFTW installation for the base, threaded and MPI libraries,
+compatible with the selected MPI runtime. If multiple installations coexist,
+use a fresh build directory with explicit prefixes. The runtime loader must
+select the intended libraries; resolve CMake runtime-search-path conflicts
+before launching. On Linux, inspect `ldd build-mpi/hyowon` after building: the
+base, threaded and MPI FFTW libraries must resolve to the intended installation.
+For a custom MPI installation, select `MPI_CXX_COMPILER` at configure time and
+use its matching `mpiexec`.
 
 ```sh
-mpiexec -n 2 build/hyowon run/snapshot.toml \
+cmake -S . -B build-mpi -DCMAKE_BUILD_TYPE=Release \
+  -DHYOWON_ENABLE_MPI=ON -DHYOWON_ENABLE_FFTW_MPI=ON \
+  -DHDF5_ROOT=/usr -DHYOWON_FFTW_ROOT=/usr
+cmake --build build-mpi --parallel 2
+
+mpiexec -n 2 build-mpi/hyowon run/snapshot.toml \
   --set ic.snapshot_file=run/ic.hdf5 \
-  --set runtime.mpi_enabled=true
+  --set runtime.mpi_enabled=true \
+  --set output.root_directory=run/output \
+  --set output.run_label=mpi
 ```
 
 Distributed PM evolution uses FFTW-MPI rank-local one-dimensional slabs. Native
@@ -148,15 +203,6 @@ Scratch mode defaults to memory. Disk scratch changes backing placement only and
 is not a guarantee on RSS or page-cache use. Prefer node-local scratch over a
 shared filesystem when available and benchmark the selected environment.
 
-### Bounded release baseline
-
-A compact serial pure-PM software baseline is `L=64 Mpc/h`, `N=64`, PM mesh 64,
-2LPT with `K=31` and IC mesh 128, `z_start=24`, `z_final=0`, and
-`delta_ln_a=0.01`, using Gaussian independent phases. It has a 1 Mpc/h mean
-particle spacing and PM cell, `k_f=0.0982 h/Mpc`, and `k_Ny=3.142 h/Mpc`; the IC
-mesh satisfies `128 > 3*31`.
-
-This baseline is a bounded end-to-end software path, not a precision recommendation.
 Scientific claims require independent refinement of the numerical coordinates
 relevant to the target observable, including start redshift, timestep, force mesh,
 particle sampling, box size, and IC support.
@@ -182,8 +228,13 @@ Generated IC coordinates include:
 | `ic.phase_pairing` | `independent`, `pair_a`, or `pair_b`. |
 
 The spectrum uses `k [h/Mpc]` and `P(k) [(Mpc/h)^3]`, positive finite values, and
-strictly increasing k. Its header binds units, epoch, species, gauge, normalization,
-nonlinear status, neutrino mass, and cosmological parameters. Input bytes are hashed.
+strictly increasing k. The required `# key=value` header syntax is illustrated by
+the first 15 lines of [the bundled table](examples/quickstart_camb/linear_cb_z0.dat).
+Accepted semantics are synchronous-gauge `cold_plus_baryon`,
+`fidelity=precision_boltzmann`, `normalization=sigma8_z0`, `nonlinear=false` and
+zero massive-neutrino mass. Header cosmology, normalization value and spectrum
+redshift must match the configuration and the actual supplied spectrum; editing
+metadata alone does not make a different spectrum compatible. Input bytes are hashed.
 The table must cover the Fourier modes requested by the selected box and support;
 out-of-range spectrum queries are errors.
 
@@ -245,10 +296,8 @@ apertures may overlap and they do not by themselves form a distinct-host/subhalo
 catalogue.
 
 FoF catalogue centers use the intrinsic mass-weighted Fréchet center of represented
-periodic particle coordinates. This is a mathematically defined periodic center-of-
-mass estimator, not a claim that it is the physically preferred halo center. Density
-peaks, potential minima, and most-bound-particle centers answer different catalogue
-questions and should not be conflated with this estimator.
+periodic particle coordinates; this need not coincide with a density peak,
+potential minimum or most-bound particle.
 
 Closed-aperture and FoF membership compare the exact torus squared distance of the
 represented canonical binary64 endpoints with the requested radius. Fast outward-
@@ -257,20 +306,18 @@ arithmetic. Rounded displacement/radius values are descriptive quantities rather
 than boundary predicates.
 
 Named SO shell ordering and shell membership use that exact represented-endpoint
-geometry, but the mean-density crossing radius is still a binary64 projection
-computed from the once-rounded enclosed mass and represented density parameters.
-Exact periodic predicates therefore do not make the continuous SO density root an
-arbitrary-precision quantity; sub-ulp cases at that final projection belong to the
-finite-representation estimator and are not a separate precision claim.
+geometry, but the mean-density crossing radius is a binary64 projection of the
+once-rounded enclosed mass and represented density parameters. Exact membership
+predicates do not make that continuous density root arbitrary precision.
 
-A minimal field-only run is shown below. The output directory must be new, and
-its parent must already exist. If you have not created `run/` above, first create
-a private output parent with `mkdir -m 700 run`.
+A minimal field-only analysis of the two-stage example is shown below. Its output
+directory must be new and its parent must exist (`run/` was created above).
+The small mesh and bin count exercise the software path only.
 
 ```sh
-build/hyowon_analyze SNAPSHOT.hdf5 \
+build/hyowon_analyze run/output/minimal_snapshot/snapshots/snapshot_1.hdf5 \
   --output-directory run/analysis \
-  --field-mesh 128 --bins 32 \
+  --field-mesh 8 --bins 4 \
   --field-interlacing interlaced \
   --field-shot-noise raw \
   --field-max-k-fraction-nyquist 0.5 \
@@ -302,15 +349,18 @@ examples, license, citation metadata, and release documentation. Produce formal
 assets only from a clean checkout of the exact release commit/tag. Archive SHA-256
 sidecars identify archive bytes; they are not scientific validation results.
 
-`--version` reports the software version/release stage and configure-time source
-commit/tree when Git metadata is available. Source archives without Git metadata
-report an unbound source identity.
+`--version` reports the software version/release stage and build-time source
+commit/tree/state when Git metadata is available. The header is refreshed before
+executable compilation; unchanged observations do not trigger recompilation.
+Commit/tree identify Git HEAD, and a dirty state does not identify the exact
+uncommitted contents or attest the executable. Source archives without Git
+metadata report an unbound source identity.
 
 See [CHANGELOG.md](CHANGELOG.md) for release changes.
 
 ## Citation
 
 If you use HYOWON in research, cite the software using [CITATION.cff](CITATION.cff).
-The current metadata identifies Youngjin Yeom as the author and version `0.1.0`;
+The current metadata identifies Youngjin Yeom as the author and version `0.1.1`;
 it does not declare a DOI. Prefer the metadata of a tagged release when citing
 published work.

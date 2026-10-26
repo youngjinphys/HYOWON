@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -109,6 +110,25 @@ public:
     }
 
 private:
+    friend class RestartCheckpointReadAccess;
+
+    struct ReadState {
+        core::ParticleStore particles;
+        time::TimeStepper stepper;
+        RestartStateIdentityResult identity;
+        std::shared_ptr<config::SimulationParameters::RuntimeProvenanceState>
+            provenance;
+    };
+
+    ReadState decode_restart(
+        RestartReadSession& session,
+        const time::TimeStepper& stepper,
+        std::string_view expected_state_sha256) const;
+    void publish_restart(
+        ReadState& state,
+        core::ParticleStore& particles_out,
+        time::TimeStepper& stepper_out) const noexcept;
+
     config::SimulationParameters config_;
 };
 

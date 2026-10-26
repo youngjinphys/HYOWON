@@ -47,14 +47,29 @@ void LeapfrogIntegrator::trigger_force_solve(core::Real scale_factor) {
             "LeapfrogIntegrator force scale factor must lie in (0,1]");
     }
 
-    // Invalidate the stored acceleration before the callback can clear or
-    // partially replace it; successful publication restores validity and epoch.
-    particles_.set_acceleration_validity(core::FieldValidity::INVALID);
-    prepared_force_scale_factor_.reset();
+    std::span<core::Real> acc_x, acc_y, acc_z;
+    std::span<const core::Real> position_x, position_y, position_z, masses;
+    std::exception_ptr preparation_error;
+    try {
+        // Invalidate before the callback can partially replace the force, and
+        // materialize lazy storage before any rank enters callback collectives.
+        particles_.set_acceleration_validity(core::FieldValidity::INVALID);
+        prepared_force_scale_factor_.reset();
+        acc_x = particles_.mutable_accelerations_x();
+        acc_y = particles_.mutable_accelerations_y();
+        acc_z = particles_.mutable_accelerations_z();
+        position_x = particles_.get_positions_x();
+        position_y = particles_.get_positions_y();
+        position_z = particles_.get_positions_z();
+        masses = particles_.get_uniform_mass().has_value()
+            ? std::span<const core::Real>{}
+            : particles_.get_masses();
+    } catch (...) {
+        preparation_error = std::current_exception();
+    }
+    runtime::synchronize_mpi_exception(
+        preparation_error, collective_size_, "Leapfrog force preparation");
 
-    auto acc_x = particles_.mutable_accelerations_x();
-    auto acc_y = particles_.mutable_accelerations_y();
-    auto acc_z = particles_.mutable_accelerations_z();
     std::size_t count = acc_x.size();
 
 #ifdef COSMO_NBODY_HAS_OPENMP
@@ -67,20 +82,15 @@ void LeapfrogIntegrator::trigger_force_solve(core::Real scale_factor) {
         acc_z[i] = 0.0;
     }
 
-    const std::span<const core::Real> masses =
-        particles_.get_uniform_mass().has_value()
-        ? std::span<const core::Real>{}
-        : particles_.get_masses();
-
     // Callbacks that perform collectives must synchronize their own internal
-    // stages. Synchronize their return here as well, so a local exception does
-    // not leave peers advancing into the acceleration publication collective.
+    // stages. Their return and the local publication preparation share the
+    // second synchronization, so no rank publishes a partially prepared force.
     std::exception_ptr force_error;
     try {
         force_solver_(
-            particles_.get_positions_x(),
-            particles_.get_positions_y(),
-            particles_.get_positions_z(),
+            position_x,
+            position_y,
+            position_z,
             masses,
             acc_x,
             acc_y,
@@ -89,34 +99,33 @@ void LeapfrogIntegrator::trigger_force_solve(core::Real scale_factor) {
     } catch (...) {
         force_error = std::current_exception();
     }
-    runtime::synchronize_mpi_exception(
-        force_error, collective_size_, "Leapfrog force callback");
-
-    // The callback may migrate particles and reallocate storage. Reacquire the
-    // acceleration spans before their canonical finite check and publication.
-    acc_x = particles_.mutable_accelerations_x();
-    acc_y = particles_.mutable_accelerations_y();
-    acc_z = particles_.mutable_accelerations_z();
-    count = acc_x.size();
-
-    int invalid_force = 0;
+    if (!force_error) {
+        try {
+            // The callback may migrate particles and reallocate storage.
+            acc_x = particles_.mutable_accelerations_x();
+            acc_y = particles_.mutable_accelerations_y();
+            acc_z = particles_.mutable_accelerations_z();
+            count = acc_x.size();
+            int invalid_force = 0;
 #ifdef COSMO_NBODY_HAS_OPENMP
-    #pragma omp parallel for reduction(|:invalid_force) schedule(static) \
-        if(runtime::should_use_host_parallel_team(count))
+            #pragma omp parallel for reduction(|:invalid_force) schedule(static) \
+                if(runtime::should_use_host_parallel_team(count))
 #endif
-    for (std::size_t i = 0; i < count; ++i) {
-        invalid_force |= !std::isfinite(acc_x[i])
-            || !std::isfinite(acc_y[i])
-            || !std::isfinite(acc_z[i]);
+            for (std::size_t i = 0; i < count; ++i) {
+                invalid_force |= !std::isfinite(acc_x[i])
+                    || !std::isfinite(acc_y[i])
+                    || !std::isfinite(acc_z[i]);
+            }
+            if (invalid_force != 0) {
+                throw std::overflow_error(
+                    "Leapfrog force callback produced a non-finite acceleration");
+            }
+        } catch (...) {
+            force_error = std::current_exception();
+        }
     }
-    if (collective_size_ > 1) {
-        runtime::synchronize_mpi_failure(invalid_force, collective_size_,
-            "Leapfrog force callback produced a non-finite acceleration");
-    }
-    if (invalid_force != 0) {
-        throw std::overflow_error(
-            "Leapfrog force callback produced a non-finite acceleration");
-    }
+    runtime::synchronize_mpi_exception(
+        force_error, collective_size_, "Leapfrog force callback and publication");
 
     particles_.set_acceleration_validity(core::FieldValidity::VALID);
     prepared_force_scale_factor_ = scale_factor;

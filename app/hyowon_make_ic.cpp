@@ -185,7 +185,7 @@ int main(int argc, char** argv) {
             << (argv[0] != nullptr ? argv[0] : "hyowon_make_ic")
             << " <config.toml> --output <initial_conditions.hdf5> "
                "[--evidence <initial_conditions.json>] [--overwrite]\n"
-            << "  --version  Print configure-time build identity without starting a run.\n";
+            << "  --version  Print build-time source identity without starting a run.\n";
         return 0;
     }
 
@@ -299,7 +299,7 @@ int main(int argc, char** argv) {
                     << "  \"verdict_semantics\": false,\n"
                     << "  \"scientific_accuracy_certificate\": false,\n"
                     << "  \"interpretation\": \"generated_ic_measurements_and_provenance_require_independent_physical_validation\",\n"
-                    << "  \"build_provenance_scope\": \"configure_time_git_observation_not_executable_attestation\",\n"
+                    << "  \"build_provenance_scope\": \"build_time_git_observation_not_executable_attestation\",\n"
                     << "  \"build_source_commit\": \""
                     << build_info::SOURCE_COMMIT << "\",\n"
                     << "  \"build_source_tree\": \""

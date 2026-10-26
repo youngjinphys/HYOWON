@@ -3,6 +3,7 @@
 #include <stdexcept>
 #include <string>
 #include <exception>
+#include <locale>
 
 namespace cosmo_nbody::io {
 namespace {
@@ -48,6 +49,7 @@ CheckedOutputFile::CheckedOutputFile(
     if (!output_) {
         throw output_error("creating staged", path, role);
     }
+    output_.imbue(std::locale::classic());
     output_.precision(17);
 }
 
