@@ -113,7 +113,11 @@ ExactHdf5FileIdentity ExactHdf5FileIdentity::open_readonly(
         impl->context + ": open HDF5 object without exact POSIX identity");
     return ExactHdf5FileIdentity(std::move(impl));
 #else
-    int flags = O_RDONLY;
+    // Acquire the allocating owner before opening the descriptor, so allocation
+    // failure cannot leak an otherwise unowned file handle.
+    auto impl = std::make_unique<Impl>();
+    // Reach the existing regular-file admission check even for an idle FIFO.
+    int flags = O_RDONLY | O_NONBLOCK;
 #ifdef O_CLOEXEC
     flags |= O_CLOEXEC;
 #endif
@@ -128,7 +132,6 @@ ExactHdf5FileIdentity ExactHdf5FileIdentity::open_readonly(
         throw system_error(context, "could not bind file", path, errno);
     }
 
-    auto impl = std::make_unique<Impl>();
     impl->bound_descriptor = descriptor;
     impl->requested_path = std::filesystem::absolute(path).lexically_normal();
     impl->descriptor_path = std::filesystem::path("/dev/fd")

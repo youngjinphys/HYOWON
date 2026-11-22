@@ -107,7 +107,9 @@ VerifiedSnapshotSource::VerifiedSnapshotSource(
     throw std::runtime_error(
         "Exact snapshot IC object binding is not implemented for Windows; refusing pathname-only ingestion");
 #else
-    int flags = O_RDONLY;
+    // Reject unsupported FIFOs through fstat without blocking in open first.
+    // Regular-file reads retain their ordinary blocking semantics.
+    int flags = O_RDONLY | O_NONBLOCK;
 #ifdef O_CLOEXEC
     flags |= O_CLOEXEC;
 #endif

@@ -1,6 +1,7 @@
 #include "cosmo_nbody/validation/diagnostics.hpp"
 
 #include <cmath>
+#include <locale>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
@@ -63,6 +64,8 @@ void DiagnosticReport::add_check(DiagnosticCheck check) {
 
 std::string DiagnosticReport::summary_text() const {
     std::ostringstream out;
+    out.imbue(std::locale::classic());
+    out.exceptions(std::ios::badbit | std::ios::failbit);
     out.precision(6);
     out << "Diagnostic report: "
         << checks_.size() << " measurements\n"
@@ -80,6 +83,8 @@ std::string DiagnosticReport::summary_text() const {
 
 std::string DiagnosticReport::to_json() const {
     std::ostringstream out;
+    out.imbue(std::locale::classic());
+    out.exceptions(std::ios::badbit | std::ios::failbit);
     out.precision(17);
     out << "{\"product_kind\":\"diagnostic_report\""
         << ",\"verdict_semantics\":false"

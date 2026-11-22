@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <exception>
 #include <limits>
+#include <locale>
 #include <span>
 #include <sstream>
 #include <stdexcept>
@@ -72,12 +73,10 @@ GatheredRankDigests gather_rank_digests(
     } catch (...) {
         stage_exception = std::current_exception();
     }
-    const std::string hashing_stage =
-        std::string(stage_prefix) + " local identity hashing";
     runtime::synchronize_mpi_exception(
         stage_exception,
         context.size(),
-        hashing_stage.c_str());
+        stage_prefix);
     if (!is_canonical_sha256(result.local_digest)) {
         throw std::logic_error(
             "Execution-provenance SHA-256 implementation returned a non-canonical digest");
@@ -125,12 +124,10 @@ GatheredRankDigests gather_rank_digests(
     } catch (...) {
         stage_exception = std::current_exception();
     }
-    const std::string allocation_stage =
-        std::string(stage_prefix) + " rank digest allocation";
     runtime::synchronize_mpi_exception(
         stage_exception,
         context.size(),
-        allocation_stage.c_str());
+        stage_prefix);
 
     if (context.size() == 1) {
         for (std::size_t index = 0;
@@ -251,7 +248,7 @@ RankOrderedRuntimeStringIdentity collect_rank_ordered_string_identity(
     return RankOrderedRuntimeStringIdentity{
         gathered.available_rank_count,
         uniform,
-        complete_uniform_value ? gathered.local_digest : std::string{},
+        complete_uniform_value ? std::move(gathered.local_digest) : std::string{},
         std::move(aggregate_digest)};
 }
 
@@ -362,6 +359,8 @@ std::string execution_provenance_json(
     const ExecutionProvenance& provenance) {
     const auto& topology = provenance.topology;
     std::ostringstream out;
+    out.imbue(std::locale::classic());
+    out.exceptions(std::ios::badbit | std::ios::failbit);
     out << "{\n"
         << "  \"product_kind\": \"execution_provenance\",\n"
         << "  \"semantics\": \"descriptive_execution_coordinates_not_numerical_method_identity\",\n"

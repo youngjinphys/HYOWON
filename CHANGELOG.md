@@ -1,175 +1,39 @@
 # Changelog
 
-## 0.1.1
+## 0.1.2 — Maintenance release
 
-Maintenance changes relative to `v0.1.0` at
-`be99e25c556059f2c9629108994a9d4bb427bac4`:
+This release focuses on runtime and input robustness. It introduces no new
+cosmological model, gravity method, or native snapshot/restart schema.
 
-- Cache zero-origin CIC geometry per operation while preserving wrapping,
-  division, weights, particle order, empty-input behavior, and accumulation order.
-- Parallelize nonnegative segment sums with the existing exact integer
-  accumulator, combining partial accumulators before the final binary64 rounding.
-- Process complete SHA-256 blocks directly and encode hexadecimal output without
-  a formatting stream; keep SHA-256 and canonical content encodings unchanged.
-- Publish restart particles, time, and shared provenance only after manifest
-  validation and all-rank read agreement. Hash the opened manifest stream through
-  EOF, and rewind bound HDF5 descriptors before opening or hashing them.
-- Synchronize MPI force-storage preparation and publication errors, and guard
-  startup string allocation and MPI transport failures.
-- Use the classic locale for machine-readable text and Linux memory counters.
-  Refresh Git source observations at build time without claiming exact dirty-tree
-  contents or executable attestation.
-- Retain and clarify the build, MPI-provider, execution, analysis, and citation
-  guidance from the post-v0.1.0 README update.
+- Avoid an MPI collective stall when provenance setup fails on one rank.
+- Reject non-regular inputs without waiting for a FIFO writer; close file handles
+  correctly if buffer or ownership allocation fails.
+- Distinguish FFTW wisdom files by planner configuration while retaining compatible
+  existing cache files and their plans.
+- Propagate machine-readable output failures instead of returning truncated JSON;
+  use locale-independent numeric formatting.
+- Reject empty required analysis paths and options rather than silently omitting
+  requested products.
+- Simplify the README, clarify numerical limitations, and provide a separate user
+  guide. Exclude development-only release checks from the public source tree.
 
-The force operator, FFT layouts/planner policy/normalization, drift/kick arithmetic,
-initial-condition model, defaults, and snapshot/restart schemas are unchanged.
-Bitwise comparisons require the same inputs, execution configuration, and FFTW
-plans; this patch does not promise identity across thread counts or MPI layouts.
+The existing pure-PM numerical scheme, IC generation, timestep arithmetic,
+force operators, and physical defaults are unchanged. Matched small-scale Linux
+PM executions and restarts showed identical numerical data under the same inputs
+and execution configuration; these checks do not certify cosmological convergence,
+cross-platform identity, or TreePM accuracy.
 
-Validation used Linux Release builds with MPI disabled/enabled and the existing
-release smoke check. Generated ICs matched, as did 64-particle evolution/restart
-runs with one/two host threads and with two MPI ranks under matching FFTW plans.
-Serial field-analysis output matched on a common snapshot. Separate temporary
-checks covered CIC boundaries, exact sums,
-SHA-256 vectors/chunking, rejected checkpoint state preservation, and incremental
-source capture. These are bounded software checks, not convergence evidence;
-the descriptor-offset correction was not exercised on macOS.
+## 0.1.1 — Maintenance release
 
-## 0.1.0 — Paper 0 release
+Improved CIC geometry reuse, exact reductions, SHA-256 processing, checkpoint
+publication and MPI failure handling. Preserved the v0.1.0 scientific model and
+native artifact schemas.
 
-First Paper 0 public research release. Changes are compared with public HYOWON
-`v0.0.3` at `125edabfd7dcdbb17b9a77f09ac34a4cbdccca6b`.
+[Release notes](https://github.com/youngjinphys/HYOWON/releases/tag/v0.1.1)
 
-### Numerical semantics
+## 0.1.0 — Paper 0 research release
 
-- Replace the proxy projected-2LPT mesh condition `M >= 2N` with the retained-band
-  condition `M > 3K`. The quadratic source is projected back to the inclusive
-  Cartesian support `|m_i| <= K`; preserving the complete `[-2K,2K]` convolution
-  would be a different problem. The independent `M % N == 0` condition remains a
-  direct particle-lattice sampling constraint.
-- Keep the historical automatic `M=2N` choice for default near-particle-Nyquist
-  support while admitting `M=N` for deliberately reduced support when `N > 3K`.
-- Preserve exact represented-binary64 periodic membership and ordering semantics.
-  Fast outward-rounded interval filters may certify distance/radius relations;
-  ambiguous cases fall back to exact dyadic integer arithmetic. Exact failures are
-  propagated rather than converted into an `outside` result.
-- Use monotone correctly-rounded squared-distance keys to avoid repeating exact
-  arithmetic during halo distance sorting. Equal keys remain ambiguous and are
-  resolved with the exact comparator.
-- Group SO and Vmax particles by exact represented periodic shells. Vmax projects
-  the exact shell distance to nearest-even binary64 with an exact midpoint decision
-  and carries its exact positive enclosed-mass accumulator into the logarithmic
-  circular-speed calculation.
-- Replace the previous circular periodic FoF mass center with the intrinsic
-  mass-weighted Fréchet center on the represented three-torus. This is a precise
-  catalogue center-of-mass estimator, not a universal physical halo-center claim.
-- Admit the TreePM `theta=0` exact-opening endpoint while retaining the configured
-  short-range cutoff, softening, and leaf arithmetic.
-- Admit the two-knot natural-cubic limit and evaluate the resulting log-linear
-  affine quotient from exact represented dyadic inputs with one nearest-even
-  binary64 rounding.
-- Define the Layzer-Irvine normalized ratio directly when its denominator is
-  nonzero. The pure-PM closure remainder remains a diagnostic rather than a pure
-  timestep-error estimator.
+First numbered public research source for Paper 0. The software version identifies
+an implementation; it does not constitute a universal precision-cosmology claim.
 
-### Runtime and reproducibility
-
-- Add an opt-in `HYOWON_BUILD_TESTING` CTest smoke check covering bundled IC
-  generation, evolution, restart lineage, existing-output protection, and field
-  analysis, with isolated temporary artifacts. Document default build dependencies.
-- Reuse otherwise-dead serial/replicated PM complex-FFT storage as transient
-  deterministic CIC ordering scratch when capacity permits; distributed or small
-  buffers retain the owned-scratch path.
-- Parallelize the serial/replicated deposited-mass audit with exact mergeable
-  positive sums without changing the represented final mass.
-- Keep distributed PM on FFTW-MPI rank-local slabs. Native generated LPT remains a
-  serial capability and distributed runs start from generated snapshots.
-- Record FFTW planning/runtime provenance. Bitwise identity across different thread
-  counts, planner states, or MPI decompositions is not a release contract.
-
-### Paper 0 interpretation
-
-- Generated LPT uses the persisted corner-lattice convention `q_i=iL/N`. Its phase
-  relative to the evolution PM mesh is part of the represented numerical setup;
-  matched force-resolution comparisons must keep the generated IC fixed.
-- `gravity.deconvolve_cic` and PM mesh size remain independent numerical choices.
-  No mesh/deconvolution combination is globally promoted to a precision setting
-  from a bounded single-mode result.
-- Keep named SO products as density-peak-seeded measurements that may overlap and
-  do not by themselves define a distinct-host/subhalo catalogue. HMF and 2PCF
-  remain statistics of the retained FoF-candidate catalogue.
-- Keep source lineage, software-path execution, numerical response experiments,
-  cross-code comparisons, and physical convergence as distinct evidence classes.
-  An external code used for comparison is not designated as ground truth.
-
-### Distribution and scope
-
-- Keep the tracked release tree limited to maintained source, build files, examples,
-  release metadata, licensing, and citation material; generated build/simulation
-  artifacts are excluded from source archives.
-- Keep a small CAMB-backed quick-start spectrum with CAMB version, parameters, and
-  sanitized generation provenance so the bundled example is executable without a
-  Boltzmann-code installation.
-- Source archives use `HYOWON-v0.1.0` versioned names and SHA-256 sidecars.
-- Native artifact identities remain `hyowon.snapshot` and `hyowon.restart`; earlier
-  numbered pre-release identities remain historical contracts.
-- Pure PM is the primary Paper 0 path; TreePM remains experimental. No
-  hydrodynamics, radiation evolution, baryonic feedback, massive-neutrino
-  clustering, or general precision-cosmology certificate is added by this release.
-
-## 0.0.3 — Beta
-
-Public release commit: `125edabfd7dcdbb17b9a77f09ac34a4cbdccca6b`.
-
-### Runtime, analysis, and numerical integrity
-
-- Correct HMF user-unit conversion, periodic endpoint handling, collective MPI
-  startup/error synchronization, disk-scratch failure handling, and analysis-only
-  build separation.
-- Disable unsafe floating-point reassociation for HYOWON C++ targets so exact
-  boundary predicates and compensated reductions are not silently changed by
-  compiler fast-math semantics.
-- Add pure-PM force-energy work diagnostics at synchronized KDK endpoints without
-  changing the production PM force operator.
-
-### Initial conditions and provenance
-
-- Bind generated-IC source configuration and Fourier-support provenance more
-  strictly, protect source inputs from output-path aliasing, and preserve the shared
-  reflection-compatible Hessian convention used by generated 2LPT and T-web.
-- Keep generated ICs based on explicit external precision-Boltzmann spectra; the
-  generator does not invoke a Boltzmann solver or silently renormalize P(k).
-
-### Native artifacts and release surface
-
-- Introduce the canonical versionless native identities `hyowon.snapshot` and
-  `hyowon.restart`. Numbered beta identities from 0.0.2 and earlier are not treated
-  as compatibility aliases.
-- Keep the distributed source limited to maintained release files; local development
-  artifacts are not shipped.
-- Add `CITATION.cff` and keep a compact README, examples, license, and third-party
-  notices.
-
-### Scope
-
-- 0.0.3 is a Beta research implementation. Its version label is not a universal
-  precision-cosmology, large-volume, multi-node, or convergence certificate.
-
-## 0.0.2 — Beta
-
-Compared with v0.0.1, commit `04344e0376989a63486e206665a6373c48386836`.
-
-- Bind requested IC Fourier support into restart and MPI numerical identities.
-- Bound MPI snapshot verification buffers and synchronize rank-local runtime setup
-  and validation publication errors before later collectives.
-- Preserve coordinate-reflection symmetry in T-web classification on even meshes
-  and share the Fourier Hessian implementation with LPT.
-- Advance build and CLI identity to 0.0.2 while retaining Beta status.
-
-Numbered beta snapshot/restart identities used by this release are intentionally
-not the current canonical artifact identities.
-
-## 0.0.1 — Beta
-
-First public beta release.
+[Release notes](https://github.com/youngjinphys/HYOWON/releases/tag/v0.1.0)

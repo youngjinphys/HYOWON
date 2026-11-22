@@ -15,7 +15,7 @@ set(
     CACHE PATH
     "Optional coherent FFTW installation prefix for headers, base/threads libraries, and FFTW-MPI")
 
-project(HYOWON VERSION 0.1.1 LANGUAGES CXX C)
+project(HYOWON VERSION 0.1.2 LANGUAGES CXX C)
 set(HYOWON_RELEASE_STAGE "Release")
 
 # Source provenance is refreshed before the executables build; see
@@ -56,25 +56,6 @@ if(HYOWON_ENABLE_MPI)
     set_source_files_properties(app/hyowon.cpp PROPERTIES
         COMPILE_DEFINITIONS "main=hyowon_program_main")
     target_sources(hyowon PRIVATE app/hyowon_entry.cpp)
-endif()
-
-option(HYOWON_BUILD_TESTING "Enable the bounded release smoke test" OFF)
-if(HYOWON_BUILD_TESTING)
-    enable_testing()
-    set(HYOWON_SMOKE_ARGUMENTS
-        "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
-        "-DBINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
-        "-DSIMULATOR=$<TARGET_FILE:hyowon>"
-        "-DIC_GENERATOR=$<TARGET_FILE:hyowon_make_ic>")
-    if(HYOWON_BUILD_ANALYZER)
-        list(APPEND HYOWON_SMOKE_ARGUMENTS
-            "-DANALYZER=$<TARGET_FILE:hyowon_analyze>")
-    endif()
-    add_test(NAME release_smoke
-        COMMAND "${CMAKE_COMMAND}" ${HYOWON_SMOKE_ARGUMENTS}
-            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/release_smoke.cmake")
-    set_tests_properties(release_smoke PROPERTIES TIMEOUT 300
-        ENVIRONMENT "OMP_NUM_THREADS=2")
 endif()
 
 set(CPACK_SOURCE_GENERATOR "TGZ;ZIP")

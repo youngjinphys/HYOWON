@@ -14,8 +14,8 @@ const std::string& next_value(
     std::size_t& index,
     std::span<const std::string> arguments,
     std::string_view option) {
-    if (index + 1 >= arguments.size()) {
-        throw std::invalid_argument(std::string(option) + " requires a value");
+    if (index + 1 >= arguments.size() || arguments[index + 1].empty()) {
+        throw std::invalid_argument(std::string(option) + " requires a non-empty value");
     }
     return arguments[++index];
 }
@@ -329,6 +329,9 @@ AnalysisRequest parse_analysis_request(
     std::span<const std::string> arguments) {
     if (arguments.size() < 2) {
         throw std::invalid_argument(analysis_request_usage());
+    }
+    if (arguments[1].empty()) {
+        throw std::invalid_argument("Analysis snapshot path must not be empty");
     }
 
     AnalysisRequest r;

@@ -7,6 +7,7 @@
 #include <cmath>
 #include <iomanip>
 #include <limits>
+#include <locale>
 #include <sstream>
 #include <stdexcept>
 
@@ -342,6 +343,7 @@ std::string layzer_irvine_timeline_to_json(
     }
 
     std::ostringstream out;
+    out.imbue(std::locale::classic());
     out << std::setprecision(17)
         << "{\n"
         << "  \"product_kind\": \"layzer_irvine_timeline\",\n"

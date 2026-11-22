@@ -228,7 +228,13 @@ std::optional<std::string> capture_wisdom_file_bytes(
         CloseHandle(handle);
         throw wisdom_input_error("read bounded", path, "file is too large");
     }
-    std::string bytes(static_cast<std::size_t>(size), '\0');
+    std::string bytes;
+    try {
+        bytes.resize(static_cast<std::size_t>(size));
+    } catch (...) {
+        CloseHandle(handle);
+        throw;
+    }
     std::size_t offset = 0;
     while (offset < bytes.size()) {
         const DWORD request = static_cast<DWORD>(std::min<std::size_t>(
@@ -280,7 +286,13 @@ std::optional<std::string> capture_wisdom_file_bytes(
         close_descriptor_noexcept(descriptor);
         throw wisdom_input_error("read bounded", path, "file is too large");
     }
-    std::string bytes(static_cast<std::size_t>(before.st_size), '\0');
+    std::string bytes;
+    try {
+        bytes.resize(static_cast<std::size_t>(before.st_size));
+    } catch (...) {
+        close_descriptor_noexcept(descriptor);
+        throw;
+    }
     std::size_t offset = 0;
     while (offset < bytes.size()) {
         const ssize_t received = ::read(
@@ -683,6 +695,33 @@ std::string current_planner_wisdom_bytes() {
     return bytes;
 }
 
+std::string_view wisdom_configuration_header(std::string_view bytes) {
+    return bytes.substr(0, bytes.find('\n'));
+}
+
+bool recognized_wisdom_configuration_header(
+    std::string_view header,
+    std::string_view current_header) {
+    // HYOWON writes FFTW's canonical first line: version/type followed by
+    // four hexadecimal 32-bit signature words. Recognize only this format
+    // from the same provider version, not arbitrary rejected input.
+    const auto signature_start = current_header.find(" #x");
+    if (signature_start == std::string_view::npos
+        || !header.starts_with(current_header.substr(0, signature_start))) {
+        return false;
+    }
+    header.remove_prefix(signature_start);
+    for (int word = 0; word < 4; ++word) {
+        if (!header.starts_with(" #x")) return false;
+        header.remove_prefix(3);
+        const auto end = header.find_first_not_of("0123456789abcdefABCDEF");
+        const auto digits = end == std::string_view::npos ? header.size() : end;
+        if (digits == 0 || digits > 8) return false;
+        header.remove_prefix(digits);
+    }
+    return header.empty();
+}
+
 } // namespace
 
 std::string fftw_build_identity_sha256() {
@@ -850,16 +889,53 @@ FFTBackend::FFTBackend(
         append_identity_field(
             cache_identity,
             "complex_alignment=" + std::to_string(complex_alignment_));
-        const std::string cache_identity_sha256 =
-            io::sha256_text(cache_identity);
-        wisdom_path = *wisdom_directory
-            / ("fftw_wisdom_"
-               + cache_identity_sha256 + "_"
-               + std::to_string(N_) + "_"
-               + std::to_string(fftw_thread_count) + ".bin");
+        const auto cache_path = [&](const std::string& identity) {
+            return *wisdom_directory
+                / ("fftw_wisdom_" + io::sha256_text(identity) + "_"
+                   + std::to_string(N_) + "_"
+                   + std::to_string(fftw_thread_count) + ".bin");
+        };
+        const auto legacy_wisdom_path = cache_path(cache_identity);
+        // Thread initialization order and FFTW-MPI registration can give
+        // identical linked libraries different planner configurations. Bind
+        // new files to the configuration exported before any wisdom import.
+        const std::string empty_wisdom = current_planner_wisdom_bytes();
+        const std::string_view planner_configuration =
+            wisdom_configuration_header(empty_wisdom);
+        append_identity_field(
+            cache_identity,
+            "planner_configuration=" + std::string(planner_configuration));
+        wisdom_path = cache_path(cache_identity);
+
+        // Prefer a compatible v0.1.1 file, preserving its exact bytes and
+        // selected plans even if a context-scoped file also exists. A file
+        // from another recognized configuration belongs to that context;
+        // leave it untouched and never admit its body to this planner.
+        auto captured = capture_wisdom_file_bytes(legacy_wisdom_path);
+        if (captured.has_value()) {
+            const auto legacy_configuration =
+                wisdom_configuration_header(*captured);
+            if (legacy_configuration == planner_configuration) {
+                wisdom_path = legacy_wisdom_path;
+            } else {
+                if (!recognized_wisdom_configuration_header(
+                        legacy_configuration, planner_configuration)) {
+                    throw wisdom_input_error(
+                        "admit legacy configuration", legacy_wisdom_path,
+                        "unrecognized FFTW export header");
+                }
+                std::clog
+                    << "[fftw] Legacy wisdom belongs to another planner "
+                       "configuration; leaving "
+                    << legacy_wisdom_path.string()
+                    << " untouched and using " << wisdom_path.string() << '\n';
+                captured = capture_wisdom_file_bytes(wisdom_path);
+            }
+        } else {
+            captured = capture_wisdom_file_bytes(wisdom_path);
+        }
         planning_record.wisdom_path = wisdom_path.string();
-        if (const auto captured = capture_wisdom_file_bytes(wisdom_path);
-            captured.has_value()) {
+        if (captured.has_value()) {
             wisdom_file_existed = true;
             planning_record.imported_wisdom_sha256 =
                 io::sha256_text(*captured);

@@ -363,7 +363,9 @@ std::string sha256_bytes(std::span<const std::byte> bytes) {
 
 std::string sha256_file(const std::filesystem::path& path) {
 #if !defined(_WIN32)
-    int flags = O_RDONLY;
+    // A FIFO must reach the regular-file check without waiting for a writer.
+    // O_NONBLOCK does not change reads from an admitted regular file.
+    int flags = O_RDONLY | O_NONBLOCK;
 #ifdef O_CLOEXEC
     flags |= O_CLOEXEC;
 #endif
